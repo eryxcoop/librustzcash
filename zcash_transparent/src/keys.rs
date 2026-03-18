@@ -226,9 +226,16 @@ impl IntoIterator for NonHardenedChildRange {
 /// A [BIP44] private key at the account path level `m/44'/<coin_type>'/<account>'`.
 ///
 /// [BIP44]: https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[cfg(feature = "transparent-inputs")]
 pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
+
+#[cfg(feature = "transparent-inputs")]
+impl core::fmt::Debug for AccountPrivKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("AccountPrivKey").field(&"...").finish()
+    }
+}
 
 #[cfg(feature = "transparent-inputs")]
 impl AccountPrivKey {
@@ -328,8 +335,15 @@ impl AccountPrivKey {
 ///
 /// [BIP44]: https://github.com/bitcoin/bips/blob/master/bip-0044.mediawiki
 #[cfg(feature = "transparent-inputs")]
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AccountPubKey(ExtendedPublicKey<PublicKey>);
+
+#[cfg(feature = "transparent-inputs")]
+impl core::fmt::Debug for AccountPubKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("AccountPubKey").field(&"...").finish()
+    }
+}
 
 #[cfg(feature = "transparent-inputs")]
 impl AccountPubKey {
@@ -812,5 +826,12 @@ mod tests {
         assert_eq!(nh.index(), 0);
 
         assert!(NonHardenedChildIndex::try_from(ChildNumber::new(0, true).unwrap()).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "transparent-inputs")]
+    fn account_priv_key_debug_redaction() {
+        let sk = AccountPrivKey::from_seed(&MAIN_NETWORK, &[0u8; 64], zip32::AccountId::ZERO).unwrap();
+        assert_eq!(format!("{:?}", sk), "AccountPrivKey(\"...\")");
     }
 }

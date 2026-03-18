@@ -209,7 +209,7 @@ impl Era {
 }
 
 /// A set of spending keys that are all associated with a single ZIP-0032 account identifier.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UnifiedSpendingKey {
     #[cfg(feature = "transparent-inputs")]
     transparent: ::transparent::keys::AccountPrivKey,
@@ -217,6 +217,19 @@ pub struct UnifiedSpendingKey {
     sapling: sapling::ExtendedSpendingKey,
     #[cfg(feature = "orchard")]
     orchard: orchard::keys::SpendingKey,
+}
+
+impl core::fmt::Debug for UnifiedSpendingKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("UnifiedSpendingKey");
+        #[cfg(feature = "transparent-inputs")]
+        d.field("transparent", &"...");
+        #[cfg(feature = "sapling")]
+        d.field("sapling", &"...");
+        #[cfg(feature = "orchard")]
+        d.field("orchard", &"...");
+        d.finish()
+    }
 }
 
 impl UnifiedSpendingKey {
@@ -761,8 +774,14 @@ impl From<bip32::Error> for DerivationError {
 
 /// A key that provides the capability to recover outgoing transaction information from
 /// the block chain.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct OutgoingViewingKey([u8; 32]);
+
+impl core::fmt::Debug for OutgoingViewingKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("OutgoingViewingKey").field(&"...").finish()
+    }
+}
 
 impl From<[u8; 32]> for OutgoingViewingKey {
     fn from(ovk: [u8; 32]) -> Self {
@@ -805,7 +824,7 @@ impl AsRef<[u8; 32]> for OutgoingViewingKey {
 }
 
 /// A [ZIP 316](https://zips.z.cash/zip-0316) unified full viewing key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UnifiedFullViewingKey {
     #[cfg(feature = "transparent-inputs")]
     transparent: Option<::transparent::keys::AccountPubKey>,
@@ -814,6 +833,19 @@ pub struct UnifiedFullViewingKey {
     #[cfg(feature = "orchard")]
     orchard: Option<orchard::keys::FullViewingKey>,
     unknown: Vec<(u32, Vec<u8>)>,
+}
+
+impl core::fmt::Debug for UnifiedFullViewingKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("UnifiedFullViewingKey");
+        #[cfg(feature = "transparent-inputs")]
+        d.field("transparent", &self.transparent);
+        #[cfg(feature = "sapling")]
+        d.field("sapling", &self.sapling);
+        #[cfg(feature = "orchard")]
+        d.field("orchard", &self.orchard);
+        d.field("unknown", &self.unknown).finish()
+    }
 }
 
 impl UnifiedFullViewingKey {
@@ -1186,7 +1218,7 @@ impl UnifiedFullViewingKey {
 }
 
 /// A [ZIP 316](https://zips.z.cash/zip-0316) unified incoming viewing key.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct UnifiedIncomingViewingKey {
     #[cfg(feature = "transparent-inputs")]
     transparent: Option<::transparent::keys::ExternalIvk>,
@@ -1196,6 +1228,19 @@ pub struct UnifiedIncomingViewingKey {
     orchard: Option<orchard::keys::IncomingViewingKey>,
     /// Stores the unrecognized elements of the unified encoding.
     unknown: Vec<(u32, Vec<u8>)>,
+}
+
+impl core::fmt::Debug for UnifiedIncomingViewingKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut d = f.debug_struct("UnifiedIncomingViewingKey");
+        #[cfg(feature = "transparent-inputs")]
+        d.field("transparent", &self.transparent);
+        #[cfg(feature = "sapling")]
+        d.field("sapling", &self.sapling);
+        #[cfg(feature = "orchard")]
+        d.field("orchard", &self.orchard);
+        d.field("unknown", &self.unknown).finish()
+    }
 }
 
 impl UnifiedIncomingViewingKey {
@@ -2139,5 +2184,20 @@ mod tests {
             #[cfg(feature = "transparent-inputs")]
             assert_eq!(decoded.transparent().to_bytes(), usk.transparent().to_bytes());
         }
+    }
+
+    #[test]
+    fn usk_debug_redaction() {
+        let seed = [0u8; 64];
+        let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &seed, AccountId::ZERO).unwrap();
+        assert!(format!("{:?}", usk).contains("\"...\""));
+    }
+
+    #[test]
+    fn ovk_debug_redaction() {
+        assert_eq!(
+            format!("{:?}", super::OutgoingViewingKey::from([0u8; 32])),
+            "OutgoingViewingKey(\"...\")"
+        );
     }
 }
