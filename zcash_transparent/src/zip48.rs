@@ -10,6 +10,7 @@ use zcash_script::{
     descriptor::{self, KeyExpression, KeyOrigin, sh, sortedmulti},
     script,
 };
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zip32::AccountId;
 
 use crate::{
@@ -37,6 +38,18 @@ pub struct AccountPrivKey {
     origin: KeyOrigin,
     key: ExtendedPrivateKey<SecretKey>,
 }
+
+impl Zeroize for AccountPrivKey {
+    fn zeroize(&mut self) {
+        // Overwrite the current key with a key derived from zero entropy.
+        let zero_seed = [0u8; 32];
+        if let Ok(zeroed) = Self::from_seed_with_coin_type(&zero_seed, 0, AccountId::ZERO) {
+            *self = zeroed;
+        }
+    }
+}
+
+impl ZeroizeOnDrop for AccountPrivKey {}
 
 impl AccountPrivKey {
     /// Performs derivation of the extended private key for the ZIP 48 path:

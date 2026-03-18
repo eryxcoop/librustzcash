@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Display};
 use nonempty::NonEmpty;
 
+use secrecy::zeroize::{Zeroize, ZeroizeOnDrop};
 use zcash_address::unified::{self, Container, Encoding, Typecode, Ufvk, Uivk};
 use zcash_protocol::{PoolType, consensus};
 use zip32::{AccountId, DiversifierIndex};
@@ -218,6 +219,23 @@ pub struct UnifiedSpendingKey {
     #[cfg(feature = "orchard")]
     orchard: orchard::keys::SpendingKey,
 }
+
+impl Zeroize for UnifiedSpendingKey {
+    fn zeroize(&mut self) {
+        let zero_seed = [0u8; 32];
+        if let Ok(zeroed) = UnifiedSpendingKey::from_seed(
+            &zcash_protocol::consensus::MAIN_NETWORK,
+            &zero_seed,
+            AccountId::ZERO,
+        ) {
+            // Overwrite the current key with a key derived from zero entropy.
+            // This ensures that the original secret material is replaced.
+            *self = zeroed;
+        }
+    }
+}
+
+impl ZeroizeOnDrop for UnifiedSpendingKey {}
 
 impl UnifiedSpendingKey {
     pub fn from_seed<P: consensus::Parameters>(

@@ -14,6 +14,8 @@ use zcash_script::{
     opcode::PushValue,
     script::{self, Code, Evaluable},
 };
+#[cfg(feature = "transparent-inputs")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     address::{Script, TransparentAddress},
@@ -111,6 +113,18 @@ pub struct TransparentSigningSet {
     #[cfg(feature = "transparent-inputs")]
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
+
+#[cfg(feature = "transparent-inputs")]
+impl Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        self.keys.drain(..).for_each(|(mut sk, _)| {
+            sk.non_secure_erase();
+        });
+    }
+}
+
+#[cfg(feature = "transparent-inputs")]
+impl ZeroizeOnDrop for TransparentSigningSet {}
 
 impl Default for TransparentSigningSet {
     fn default() -> Self {

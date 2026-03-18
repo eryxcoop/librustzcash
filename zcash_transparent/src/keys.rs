@@ -15,6 +15,7 @@ use {
     secp256k1::PublicKey,
     zcash_protocol::consensus::{self, NetworkConstants},
     zcash_spec::PrfExpand,
+    zeroize::{Zeroize, ZeroizeOnDrop},
     zip32::AccountId,
 };
 
@@ -229,6 +230,20 @@ impl IntoIterator for NonHardenedChildRange {
 #[derive(Clone, Debug)]
 #[cfg(feature = "transparent-inputs")]
 pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
+
+#[cfg(feature = "transparent-inputs")]
+impl Zeroize for AccountPrivKey {
+    fn zeroize(&mut self) {
+        // Overwrite the current key with a key derived from zero entropy.
+        let zero_seed = [0u8; 32];
+        if let Ok(zeroed) = Self::from_seed(&zcash_protocol::consensus::MAIN_NETWORK, &zero_seed, AccountId::ZERO) {
+            *self = zeroed;
+        }
+    }
+}
+
+#[cfg(feature = "transparent-inputs")]
+impl ZeroizeOnDrop for AccountPrivKey {}
 
 #[cfg(feature = "transparent-inputs")]
 impl AccountPrivKey {
