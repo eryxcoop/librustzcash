@@ -11,6 +11,8 @@ workspace.
 ## [0.7.0] - PENDING
 
 ### Added
+- `zcash_transparent::address::TransparentAddress::from_script_kind`
+- `zcash_transparent::bundle::TxOut::script_kind`
 - `zcash_transparent::pczt`:
   - `Input::with_signable_input`
   - `Input::append_signature`
@@ -21,9 +23,15 @@ workspace.
 - `zcash_transparent::builder::TransparentInputInfo::{from_parts, spend_info}`
 - `zcash_transparent::builder::Builder::add_p2pkh_input`
 - `impl Hash for zcash_transparent::keys::TransparentKeyScope`
+- `zcash_transparent::builder::p2sh_input_serialized_len`
 
 ### Changed
 - MSRV is now 1.85.1.
+- `zcash_transparent::builder::TransparentBuilder::add_p2sh_input` is no longer
+  restricted to the PCZT workflow; `Bundle::apply_signatures`,
+  `Bundle::prepare_transparent_signatures`, and
+  `TransparentSignatureContext::finalize_signatures` now support P2SH (multisig)
+  inputs.
 - `zcash_transparent::pczt`:
   - `SignerError` has added variants:
     - `InvalidExternalSignature`
@@ -32,6 +40,13 @@ workspace.
 - `zcash_transparent::builder::Builder::add_input` now takes a `TransparentInputInfo`
   instead of its constituent parts. Use `Builder::add_p2pkh_input` if you need the
   previous API.
+
+### Fixed
+- `Debug` output for `zcash_transparent::keys::{AccountPrivKey,
+  AccountPubKey, ExternalIvk, InternalIvk, EphemeralIvk, InternalOvk,
+  ExternalOvk}` now redacts key material.
+- `Debug` output for `zcash_transparent::zip48::{AccountPrivKey}`
+  now redacts the embedded extended key material.
 
 ## [0.6.3] - 2025-12-17
 
