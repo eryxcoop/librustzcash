@@ -133,7 +133,7 @@ unstable-frost = ["orchard"]
 unstable = ["dep:byteorder"]
 
 ## Exposes APIs that are useful for interacting with legacy zcashd key material
-zcashd-compat = ["dep:bip0039", "dep:regex"]
+zcashd-compat = ["dep:bip0039", "dep:regex", "dep:zeroize"]
 
 [badges]
 maintenance = { status = "actively-developed" }

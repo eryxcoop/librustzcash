@@ -35,6 +35,8 @@ workspace.
   redacts sensitive key material. `UnifiedFullViewingKey` and `UnifiedIncomingViewingKey`
   no longer delegates shielded components to external `Debug` implementations
   or emits raw unknown-item bytes.
+- Mnemonic derivation from legacy `zcashd` seeds now uses stack-allocated
+  memory and explicit zeroization for sensitive entropy.
 
 ## [0.12.0] - 2025-10-13
 

@@ -5,35 +5,40 @@ use bip0039::{English, Mnemonic};
 use regex::Regex;
 use secrecy::{ExposeSecret, SecretVec};
 use zcash_protocol::consensus::NetworkConstants;
+use zeroize::Zeroize;
 use zip32::{AccountId, ChildIndex};
 
-// Derives a mnemonic phrase, using the pre-BIP-39 seed as entropy.
-//
-// zcashd produced a mnemonic from the pre-BIP-39 seed by incrementing the first byte of the
-// pre-BIP-39 seed until we found a value that was usable as valid entropy for seed phrase
-// generation.
+/// Derives a mnemonic phrase, using the pre-BIP-39 seed as entropy.
+///
+/// zcashd produced a mnemonic from the pre-BIP-39 seed by incrementing the first byte of the
+/// pre-BIP-39 seed until we found a value that was usable as valid entropy for seed phrase
+/// generation.
 pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
-    if legacy_seed.expose_secret().len() != 32 {
+    let legacy_seed_bytes = legacy_seed.expose_secret();
+    if legacy_seed_bytes.len() != 32 {
         return None;
     }
 
     let mut offset = 0u8;
-    loop {
-        let mut entropy = legacy_seed.expose_secret().clone();
-        entropy[0] += offset;
+    let mut entropy = [0u8; 32];
+    let res = loop {
+        entropy.copy_from_slice(legacy_seed_bytes);
+        entropy[0] = entropy[0].wrapping_add(offset);
         match Mnemonic::<English>::from_entropy(entropy) {
             Ok(m) => {
-                return Some(m);
+                break Some(m);
             }
             Err(_) => {
                 if offset == 0xFF {
-                    return None;
+                    break None;
                 } else {
                     offset += 1;
                 }
             }
         }
-    }
+    };
+    entropy.zeroize();
+    res
 }
 
 /// A type-safe wrapper for account identifiers.
