@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Display};
 use nonempty::NonEmpty;
 
+use secrecy::Zeroize;
 use zcash_address::unified::{self, Container, Encoding, Typecode, Ufvk, Uivk};
 use zcash_protocol::{PoolType, consensus};
 use zip32::{AccountId, DiversifierIndex};
@@ -391,19 +392,24 @@ impl UnifiedSpendingKey {
                     }
 
                     let mut key = [0u8; 32];
-                    source
-                        .read_exact(&mut key)
-                        .map_err(|_| DecodingError::InsufficientData(Typecode::Orchard))?;
-
-                    #[cfg(feature = "orchard")]
-                    {
-                        orchard = Some(
-                            Option::<orchard::keys::SpendingKey>::from(
+                    let res = source.read_exact(&mut key).map_err(|_| {
+                        key.zeroize();
+                        DecodingError::InsufficientData(Typecode::Orchard)
+                    });
+                    if res.is_ok() {
+                        #[cfg(feature = "orchard")]
+                        {
+                            let parse_res = Option::<orchard::keys::SpendingKey>::from(
                                 orchard::keys::SpendingKey::from_bytes(key),
                             )
-                            .ok_or(DecodingError::KeyDataInvalid(Typecode::Orchard))?,
-                        );
+                            .ok_or(DecodingError::KeyDataInvalid(Typecode::Orchard));
+                            key.zeroize();
+                            orchard = Some(parse_res?);
+                        }
+                        #[cfg(not(feature = "orchard"))]
+                        key.zeroize();
                     }
+                    res?;
                 }
                 Typecode::Sapling => {
                     if len != 169 {
@@ -411,17 +417,22 @@ impl UnifiedSpendingKey {
                     }
 
                     let mut key = [0u8; 169];
-                    source
-                        .read_exact(&mut key)
-                        .map_err(|_| DecodingError::InsufficientData(Typecode::Sapling))?;
-
-                    #[cfg(feature = "sapling")]
-                    {
-                        sapling = Some(
-                            sapling::ExtendedSpendingKey::from_bytes(&key)
-                                .map_err(|_| DecodingError::KeyDataInvalid(Typecode::Sapling))?,
-                        );
+                    let res = source.read_exact(&mut key).map_err(|_| {
+                        key.zeroize();
+                        DecodingError::InsufficientData(Typecode::Sapling)
+                    });
+                    if res.is_ok() {
+                        #[cfg(feature = "sapling")]
+                        {
+                            let parse_res = sapling::ExtendedSpendingKey::from_bytes(&key)
+                                .map_err(|_| DecodingError::KeyDataInvalid(Typecode::Sapling));
+                            key.zeroize();
+                            sapling = Some(parse_res?);
+                        }
+                        #[cfg(not(feature = "sapling"))]
+                        key.zeroize();
                     }
+                    res?;
                 }
                 Typecode::P2pkh => {
                     if len != 74 {
@@ -429,17 +440,22 @@ impl UnifiedSpendingKey {
                     }
 
                     let mut key = [0u8; 74];
-                    source
-                        .read_exact(&mut key)
-                        .map_err(|_| DecodingError::InsufficientData(Typecode::P2pkh))?;
-
-                    #[cfg(feature = "transparent-inputs")]
-                    {
-                        transparent = Some(
-                            ::transparent::keys::AccountPrivKey::from_bytes(&key)
-                                .ok_or(DecodingError::KeyDataInvalid(Typecode::P2pkh))?,
-                        );
+                    let res = source.read_exact(&mut key).map_err(|_| {
+                        key.zeroize();
+                        DecodingError::InsufficientData(Typecode::P2pkh)
+                    });
+                    if res.is_ok() {
+                        #[cfg(feature = "transparent-inputs")]
+                        {
+                            let parse_res = ::transparent::keys::AccountPrivKey::from_bytes(&key)
+                                .ok_or(DecodingError::KeyDataInvalid(Typecode::P2pkh));
+                            key.zeroize();
+                            transparent = Some(parse_res?);
+                        }
+                        #[cfg(not(feature = "transparent-inputs"))]
+                        key.zeroize();
                     }
+                    res?;
                 }
                 _ => {
                     return Err(DecodingError::TypecodeInvalid);
