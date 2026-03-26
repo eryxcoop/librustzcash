@@ -8,6 +8,7 @@ use nonempty::NonEmpty;
 
 use zcash_address::unified::{self, Container, Encoding, Typecode, Ufvk, Uivk};
 use zcash_protocol::{PoolType, consensus};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zip32::{AccountId, DiversifierIndex};
 
 use crate::address::UnifiedAddress;
@@ -774,7 +775,7 @@ impl From<bip32::Error> for DerivationError {
 
 /// A key that provides the capability to recover outgoing transaction information from
 /// the block chain.
-#[derive(Clone, Copy)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct OutgoingViewingKey([u8; 32]);
 
 impl core::fmt::Debug for OutgoingViewingKey {
