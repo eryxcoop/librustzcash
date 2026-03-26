@@ -690,7 +690,7 @@ impl OvkPolicy {
     pub fn custom_from_common_bytes(key: &[u8; 32]) -> Self {
         let k = OutgoingViewingKey::from(*key);
         OvkPolicy::Custom {
-            external_ovk: k,
+            external_ovk: k.clone(),
             internal_ovk: Some(k),
         }
     }

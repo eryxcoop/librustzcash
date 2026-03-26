@@ -1442,7 +1442,7 @@ where
              -> Result<(), CreateErrT<DbT, InputsErrT, FeeRuleT, ChangeErrT, N>> {
                 let memo = payment.memo().map_or_else(MemoBytes::empty, |m| m.clone());
                 builder.add_sapling_output(
-                    external_ovk.map(|k| k.into()),
+                    external_ovk.clone().map(|k| k.into()),
                     to,
                     payment_amount,
                     memo.clone(),
@@ -1466,7 +1466,7 @@ where
              -> Result<(), CreateErrT<DbT, InputsErrT, FeeRuleT, ChangeErrT, N>> {
                 let memo = payment.memo().map_or_else(MemoBytes::empty, |m| m.clone());
                 builder.add_orchard_output(
-                    external_ovk.map(|k| k.into()),
+                    external_ovk.clone().map(|k| k.into()),
                     to,
                     payment_amount,
                     memo.clone(),
@@ -1555,7 +1555,7 @@ where
         match output_pool {
             PoolType::Shielded(ShieldedProtocol::Sapling) => {
                 builder.add_sapling_output(
-                    internal_ovk.map(|k| k.into()),
+                    internal_ovk.clone().map(|k| k.into()),
                     ufvk.sapling()
                         .ok_or(Error::KeyNotAvailable(PoolType::SAPLING))?
                         .change_address()
@@ -1579,7 +1579,7 @@ where
                 #[cfg(feature = "orchard")]
                 {
                     builder.add_orchard_output(
-                        internal_ovk.map(|k| k.into()),
+                        internal_ovk.clone().map(|k| k.into()),
                         ufvk.orchard()
                             .ok_or(Error::KeyNotAvailable(PoolType::ORCHARD))?
                             .address_at(0u32, orchard::keys::Scope::Internal),
