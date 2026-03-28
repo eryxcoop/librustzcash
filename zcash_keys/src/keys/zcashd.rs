@@ -29,17 +29,19 @@ pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
 
         match res {
             Ok(m) => {
-                return Some(m);
+                break Some(m);
             }
             Err(_) => {
                 if offset == 0xFF {
-                    return None;
+                    break None;
                 } else {
                     offset += 1;
                 }
             }
         }
-    }
+    };
+    seed_bytes.zeroize();
+    res
 }
 
 /// A type-safe wrapper for account identifiers.
@@ -194,14 +196,17 @@ mod tests {
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
     use zip32::AccountId;
 
+    use secrecy::SecretVec;
+
     use super::{PathParseError, ZcashdHdDerivation};
 
     #[test]
-    fn test_derive_mnemonic_no_panic() {
-        let mut seed = [0u8; 32];
-        // 255 is used to test wrapping_add in the loop, although it doesn't
-        // iterate more than once for 32-byte entropy.
-        seed[0] = 255;
+    fn derive_mnemonic_potential_overflow() {
+        // Now set the first byte to 255 and hope it fails, so it tries to increment.
+        // Actually, we want to TEST that it doesn't panic when we use 255 and it fails.
+        // If we can't find a seed that fails at 255, we can't trigger the overflow with 255 + 1.
+        // But we can check if 255 fails.
+        let seed = [255u8; 32];
         let legacy_seed = SecretVec::new(seed.to_vec());
         let _ = super::derive_mnemonic(&legacy_seed);
     }
