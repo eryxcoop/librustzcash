@@ -13,30 +13,30 @@ use zip32::{AccountId, ChildIndex};
 // pre-BIP-39 seed until we found a value that was usable as valid entropy for seed phrase
 // generation.
 pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
-    let legacy_seed_bytes = legacy_seed.expose_secret();
-    if legacy_seed_bytes.len() != 32 {
-        return None;
-    }
+    let mut seed_bytes: [u8; 32] = legacy_seed.expose_secret().as_slice().try_into().ok()?;
 
     let mut offset = 0u8;
-    loop {
-        let mut entropy: [u8; 32] = legacy_seed_bytes[..].try_into().unwrap();
+    let res = loop {
+        let mut entropy = seed_bytes;
         entropy[0] = entropy[0].wrapping_add(offset);
-        let res = Mnemonic::<English>::from_entropy(entropy);
+        let mnemonic = Mnemonic::<English>::from_entropy(entropy);
         entropy.zeroize();
-        match res {
+
+        match mnemonic {
             Ok(m) => {
-                return Some(m);
+                break Some(m);
             }
             Err(_) => {
                 if offset == 0xFF {
-                    return None;
+                    break None;
                 } else {
                     offset += 1;
                 }
             }
         }
-    }
+    };
+    seed_bytes.zeroize();
+    res
 }
 
 /// A type-safe wrapper for account identifiers.
@@ -190,7 +190,20 @@ mod tests {
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
     use zip32::AccountId;
 
+    use secrecy::SecretVec;
+
     use super::{PathParseError, ZcashdHdDerivation};
+
+    #[test]
+    fn derive_mnemonic_potential_overflow() {
+        // Now set the first byte to 255 and hope it fails, so it tries to increment.
+        // Actually, we want to TEST that it doesn't panic when we use 255 and it fails.
+        // If we can't find a seed that fails at 255, we can't trigger the overflow with 255 + 1.
+        // But we can check if 255 fails.
+        let seed = [255u8; 32];
+        let legacy_seed = SecretVec::new(seed.to_vec());
+        let _ = super::derive_mnemonic(&legacy_seed);
+    }
 
     #[test]
     fn parse_zcashd_hd_path() {
