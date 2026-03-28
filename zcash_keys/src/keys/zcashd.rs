@@ -13,16 +13,21 @@ use zip32::{AccountId, ChildIndex};
 // pre-BIP-39 seed until we found a value that was usable as valid entropy for seed phrase
 // generation.
 pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
-    let mut seed_bytes: [u8; 32] = legacy_seed.expose_secret().as_slice().try_into().ok()?;
+    let legacy_seed_bytes = legacy_seed.expose_secret();
+    if legacy_seed_bytes.len() != 32 {
+        return None;
+    }
 
     let mut offset = 0u8;
-    let res = loop {
-        let mut entropy = seed_bytes;
+    loop {
+        let mut entropy = [0u8; 32];
+        entropy.copy_from_slice(legacy_seed_bytes);
         entropy[0] = entropy[0].wrapping_add(offset);
-        let mnemonic = Mnemonic::<English>::from_entropy(entropy);
+
+        let res = Mnemonic::<English>::from_entropy(entropy);
         entropy.zeroize();
 
-        match mnemonic {
+        match res {
             Ok(m) => {
                 break Some(m);
             }
@@ -186,6 +191,7 @@ impl ZcashdHdDerivation {
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
+    use secrecy::SecretVec;
 
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
     use zip32::AccountId;
