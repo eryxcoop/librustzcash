@@ -3,7 +3,7 @@
 use alloc::string::{String, ToString};
 use bip0039::{English, Mnemonic};
 use regex::Regex;
-use secrecy::{ExposeSecret, SecretVec};
+use secrecy::{ExposeSecret, SecretVec, Zeroize};
 use zcash_protocol::consensus::NetworkConstants;
 use zip32::{AccountId, ChildIndex};
 
@@ -13,15 +13,18 @@ use zip32::{AccountId, ChildIndex};
 // pre-BIP-39 seed until we found a value that was usable as valid entropy for seed phrase
 // generation.
 pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
-    if legacy_seed.expose_secret().len() != 32 {
+    let legacy_seed_bytes = legacy_seed.expose_secret();
+    if legacy_seed_bytes.len() != 32 {
         return None;
     }
 
     let mut offset = 0u8;
     loop {
-        let mut entropy = legacy_seed.expose_secret().clone();
-        entropy[0] += offset;
-        match Mnemonic::<English>::from_entropy(entropy) {
+        let mut entropy: [u8; 32] = legacy_seed_bytes[..].try_into().unwrap();
+        entropy[0] = entropy[0].wrapping_add(offset);
+        let res = Mnemonic::<English>::from_entropy(entropy);
+        entropy.zeroize();
+        match res {
             Ok(m) => {
                 return Some(m);
             }
