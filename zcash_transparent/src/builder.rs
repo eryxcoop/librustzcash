@@ -4,6 +4,9 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use zcash_protocol::{
     consensus::BlockHeight,
     value::{BalanceError, ZatBalance, Zatoshis},
@@ -123,6 +126,30 @@ pub struct TransparentSigningSet {
     #[cfg(feature = "transparent-inputs")]
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        #[cfg(feature = "transparent-inputs")]
+        for (sk, _) in self.keys.iter_mut() {
+            // secp256k1::SecretKey implements Zeroize in newer versions,
+            // but for compatibility with older ones used here, we use non_secure_erase().
+            sk.non_secure_erase();
+        }
+        #[cfg(feature = "transparent-inputs")]
+        self.keys.clear();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Drop for TransparentSigningSet {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl ZeroizeOnDrop for TransparentSigningSet {}
 
 impl Default for TransparentSigningSet {
     fn default() -> Self {
