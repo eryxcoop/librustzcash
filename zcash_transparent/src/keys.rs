@@ -561,6 +561,25 @@ pub trait IncomingViewingKey: private::SealedChangeLevelKey + core::marker::Size
 #[derive(Clone)]
 pub struct ExternalIvk(ExtendedPublicKey<PublicKey>);
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for ExternalIvk {
+    fn zeroize(&mut self) {
+        // ExtendedPublicKey<PublicKey> does not implement Zeroize.
+        // It contains public data (chain code and public key).
+        // We implement the trait for consistency with other viewing keys.
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for ExternalIvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for ExternalIvk {}
+
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for ExternalIvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -594,6 +613,25 @@ impl IncomingViewingKey for ExternalIvk {}
 #[cfg(feature = "transparent-inputs")]
 #[derive(Clone)]
 pub struct InternalIvk(ExtendedPublicKey<PublicKey>);
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for InternalIvk {
+    fn zeroize(&mut self) {
+        // ExtendedPublicKey<PublicKey> does not implement Zeroize.
+        // It contains public data (chain code and public key).
+        // We implement the trait for consistency with other viewing keys.
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for InternalIvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for InternalIvk {}
 
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for InternalIvk {
