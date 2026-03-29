@@ -10,6 +10,7 @@ workspace.
 ## [Unreleased]
 
 ### Added
+
 - `zcash_keys::keys::OutgoingViewingKey`
 - `zcash_keys::keys::UnifiedFullViewingKey::select_ovk`
 - `zcash_keys::keys::transparent::gap_limits` module (behind the
@@ -22,31 +23,39 @@ workspace.
   - `GapAddressesError`
 
 ### Changed
+
 - MSRV is now 1.85.1.
 - Migrated to `orchard 0.12`, `sapling-crypto 0.6`.
 - The `std` feature flag now enables the equivalent flag on the dependencies
   `orchard`, `sapling-crypto`, `zcash_transparent`, and `zcash_address`.
 
 ### Fixed
+
+- Hardened unified spending-key serialization to reduce unnecessary copies of
+  transient secret key material, improved cleanup of temporary buffers in
+  Sapling extended spending-key encoding paths, and made `zcash_keys::keys::OutgoingViewingKey`
+  zeroize on drop.
 - `Debug` output for `zcash_keys::keys::transparent::Key` now redacts its
   secret key material.
-- `Debug` output for `zcash_keys::keys::{UnifiedSpendingKey,
-  OutgoingViewingKey, UnifiedFullViewingKey, UnifiedIncomingViewingKey}` now
-  redacts sensitive key material. `UnifiedFullViewingKey` and `UnifiedIncomingViewingKey`
+- `Debug` output for `zcash_keys::keys::{UnifiedSpendingKey, OutgoingViewingKey, UnifiedFullViewingKey, UnifiedIncomingViewingKey}`
+  now redacts sensitive key material. `UnifiedFullViewingKey` and `UnifiedIncomingViewingKey`
   no longer delegates shielded components to external `Debug` implementations
   or emits raw unknown-item bytes.
 
 ## [0.12.0] - 2025-10-13
 
 ### Changed
+
 - Migrated to `zcash_protocol 0.7`, `zcash_address 0.10`, `zcash_transparent 0.6`
 
 ## [0.11.0] - 2025-09-25
 
 ### Added
+
 - `zcash_keys::address::UnifiedAddress::to_zcash_address`
 
 ### Changed
+
 - Migrated to `zcash_transparent 0.5`.
 - `zcash_keys::keys::AddressGenerationError` has added variants `UnsupportedTransparentKeyScope`
   and `Bip32DerivationError` when the `transparent-inputs` feature flag is enabled.
@@ -54,12 +63,14 @@ workspace.
 ## [0.10.1] - 2025-08-06
 
 ### Fixed
+
 - Use of an incorrect prefix for transparent secret key Base58 encoding
   (available under the `transparent-key-encoding` feature) has been fixed.
 
 ## [0.10.0] - 2025-08-06
 
 ### Added
+
 - `zcash_keys::keys::zcashd`, a module containing utilities that are useful
   for interacting with key data from legacy zcashd wallets, has been added
   under a newly-added `zcashd-compat` feature flag.
@@ -70,36 +81,43 @@ workspace.
 - `zcash_keys::address::Address::receivers`
 
 ### Changed
+
 - Migrated to `zcash_protocol 0.6`, `zcash_address 0.9`, `zcash_transparent 0.4`
 
 ## [0.9.0] - 2025-05-30
 
 ### Added
+
 - `zcash_keys::keys::UnifiedAddressRequest::{SHIELDED, ORCHARD}`
 - `zcash_keys::keys::ReceiverRequirements::{SHIELDED, ORCHARD}`
 
 ### Changed
+
 - Migrated to `zcash_address 0.8`, `zcash_transparent 0.3`.
 
 ## [0.8.2] - 2025-07-18
 
 ### Added
+
 - `zcash_keys::keys::{UnifiedFullViewingKey, UnifiedIncomingViewingKey}::default_transparent_address`
   have been added under the `test-dependencies` feature.
 
 ## [0.4.1, 0.5.1, 0.6.1, 0.7.1, 0.8.1] - 2025-05-09
 
 ### Added
+
 - `zcash_keys::Address::to_sapling_address`
 
 ## [0.8.0] - 2025-03-19
 
 ### Added
+
 - `zcash_keys::keys::UnifiedIncomingViewingKey::{has_sapling, has_orchard,
-  has_transparent, receiver_requirements, to_receiver_requirements}`
+has_transparent, receiver_requirements, to_receiver_requirements}`
 - `zcash_keys::keys::ReceiverRequirements`
 
 ### Changed
+
 - `zcash_keys::keys::UnifiedAddressRequest` is now an enum instead of a struct.
   The `new` and `unsafe_new` methods have been replaced by `custom` and
   `unsafe_custom` respectively.
@@ -110,6 +128,7 @@ workspace.
   used to obtain the same semantics.
 
 ### Removed
+
 - `UnifiedAddressRequest::{new, unsafe_new}`: use `{custom, unsafe_custom}`
   respectively instead.
 - `UnifiedAddressRequest::intersect`: a replacement for this method is now
@@ -118,12 +137,14 @@ workspace.
 ## [0.7.0] - 2025-02-21
 
 ### Added
+
 - `no-std` compatibility (`alloc` is required). A default-enabled `std` feature
   flag has been added gating the `std::error::Error` usage.
 - `zcash_keys::keys::ReceiverRequirement`
 - `zcash_keys::Address::to_transparent_address`
 
 ### Changed
+
 - MSRV is now 1.81.0.
 - Migrated to `bip32 =0.6.0-pre.1`, `nonempty 0.11`, `orchard 0.11`,
   `sapling-crypto 0.5`, `zcash_encoding 0.3`, `zcash_protocol 0.5`,
@@ -139,6 +160,7 @@ workspace.
   return `Err(())`
 
 ### Removed
+
 - `zcash_keys::keys::UnifiedAddressRequest::all` (use
   `UnifiedAddressRequest::ALLOW_ALL` or
   `UnifiedFullViewingKey::to_address_request` instead)
@@ -146,11 +168,13 @@ workspace.
 ## [0.4.1, 0.5.1, 0.6.1] - 2025-05-09
 
 ### Added
+
 - `zcash_keys::Address::to_transparent_address`
 
 ## [0.6.0] - 2024-12-16
 
 ### Changed
+
 - Migrated to `bech32 0.11`, `sapling-crypto 0.4`.
 - Added dependency on `zcash_transparent 0.1` to replace dependency
   on `zcash_primitives`.
@@ -166,23 +190,28 @@ workspace.
 ## [0.5.0] - 2024-11-14
 
 ### Changed
+
 - Migrated to `zcash_primitives 0.20.0`
 - MSRV is now 1.77.0.
 
 ## [0.4.0] - 2024-10-04
 
 ### Added
+
 - `zcash_keys::encoding::decode_extfvk_with_network`
 - `impl std::error::Error for Bech32DecodeError`
 - `impl std::error::Error for DecodingError`
 - `impl std::error::Error for DerivationError`
 
 ### Changed
+
 - Migrated to `orchard 0.10`, `sapling-crypto 0.3`, `zcash_address 0.6`,
   `zcash_primitives 0.19`, `zcash_protocol 0.4`.
 
 ## [0.3.0] - 2024-08-19
+
 ### Notable changes
+
 - `zcash_keys`:
   - Now supports TEX (transparent-source-only) addresses as specified
     in [ZIP 320](https://zips.z.cash/zip-0320).
@@ -192,6 +221,7 @@ workspace.
     once key derivation for FROST has been fully specified and implemented.
 
 ### Added
+
 - `zcash_keys::address::Address::try_from_zcash_address`
 - `zcash_keys::address::Receiver`
 - `zcash_keys::keys::UnifiedAddressRequest`
@@ -199,6 +229,7 @@ workspace.
   - `to_address_request`
 
 ### Changed
+
 - MSRV is now 1.70.0.
 - Updated dependencies:
   - `zcash_address-0.4`
@@ -214,6 +245,7 @@ workspace.
 ## [0.2.0] - 2024-03-25
 
 ### Added
+
 - `zcash_keys::address::Address::has_receiver`
 - `impl Display for zcash_keys::keys::AddressGenerationError`
 - `impl std::error::Error for zcash_keys::keys::AddressGenerationError`
@@ -224,6 +256,7 @@ workspace.
 - `zcash_keys::keys::UnifiedIncomingViewingKey`
 
 ### Changed
+
 - `zcash_keys::keys::UnifiedFullViewingKey::{find_address, default_address}`
   now return `Result<(UnifiedAddress, DiversifierIndex), AddressGenerationError>`
   (instead of `Option<(UnifiedAddress, DiversifierIndex)>` for `find_address`).
@@ -234,11 +267,13 @@ workspace.
 - Updated to `zcash_primitives-0.15.0`
 
 ### Removed
+
 - `UnifiedFullViewingKey::new` has been placed behind the `test-dependencies`
   feature flag. UFVKs should only be produced by derivation from the USK, or
   parsed from their string representation.
 
 ### Fixed
+
 - `UnifiedFullViewingKey::find_address` can now find an address for a diversifier
   index outside the valid transparent range if you aren't requesting a
   transparent receiver.
@@ -246,18 +281,22 @@ workspace.
 ## [0.1.1] - 2024-03-04
 
 ### Added
+
 - `zcash_keys::keys::UnifiedAddressRequest::all`
 
 ### Fixed
+
 - A missing application of the `sapling` feature flag was remedied;
   prior to this fix it was not possible to use this crate without the
   `sapling` feature enabled.
 
 ## [0.1.0] - 2024-03-01
+
 The entries below are relative to the `zcash_client_backend` crate as of
 `zcash_client_backend 0.10.0`.
 
 ### Added
+
 - `zcash_keys::address` (moved from `zcash_client_backend::address`). Further
   additions to this module:
   - `UnifiedAddress::{has_orchard, has_sapling, has_transparent}`
@@ -273,6 +312,7 @@ The entries below are relative to the `zcash_client_backend` crate as of
 - `zcash_keys::address::Address::to_zcash_address`
 
 ### Changed
+
 - The following methods and enum variants have been placed behind an `orchard`
   feature flag:
   - `zcash_keys::address::UnifiedAddress::orchard`
@@ -295,5 +335,6 @@ The entries below are relative to the `zcash_client_backend` crate as of
     argument unless the `orchard` feature is enabled.
 
 ### Removed
+
 - `zcash_keys::address::AddressMetadata`
   (use `zcash_client_backend::data_api::TransparentAddressMetadata` instead).

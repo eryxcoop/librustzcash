@@ -39,9 +39,7 @@ pub fn derive_mnemonic(legacy_seed: &SecretVec<u8>) -> Option<Mnemonic> {
                 }
             }
         }
-    };
-    seed_bytes.zeroize();
-    res
+    }
 }
 
 /// A type-safe wrapper for account identifiers.
@@ -195,8 +193,6 @@ mod tests {
 
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
     use zip32::AccountId;
-
-    use secrecy::SecretVec;
 
     use super::{PathParseError, ZcashdHdDerivation};
 

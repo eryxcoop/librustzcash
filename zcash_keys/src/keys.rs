@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt::{self, Display};
 use nonempty::NonEmpty;
 
-use secrecy::Zeroize;
+use secrecy::{Zeroize, zeroize::ZeroizeOnDrop};
 use zcash_address::unified::{self, Container, Encoding, Typecode, Ufvk, Uivk};
 use zcash_protocol::{PoolType, consensus};
 use zip32::{AccountId, DiversifierIndex};
@@ -42,6 +42,22 @@ use orchard::{self, keys::Scope};
 
 #[cfg(all(feature = "sapling", feature = "unstable"))]
 use ::sapling::zip32::ExtendedFullViewingKey;
+
+#[cfg(all(feature = "unstable", feature = "orchard"))]
+const USK_ORCHARD_SPENDING_KEY_BYTES: usize = 32;
+
+#[cfg(all(feature = "unstable", feature = "sapling"))]
+const USK_SAPLING_EXTENDED_SPENDING_KEY_BYTES: usize = 169;
+
+#[cfg(all(feature = "unstable", feature = "transparent-inputs"))]
+const USK_TRANSPARENT_ACCOUNT_PRIVKEY_BYTES: usize = 74;
+
+#[cfg(feature = "unstable")]
+fn serialized_usk_item_len(typecode: Typecode, value_len: usize) -> usize {
+    CompactSize::serialized_size(usize::try_from(typecode).unwrap())
+        + CompactSize::serialized_size(value_len)
+        + value_len
+}
 
 #[cfg(feature = "sapling")]
 pub mod sapling {
@@ -319,37 +335,59 @@ impl UnifiedSpendingKey {
     /// spend a note that they have authority for.
     #[cfg(feature = "unstable")]
     pub fn to_bytes(&self, era: Era) -> Vec<u8> {
-        let mut result = vec![];
+        let mut result = Vec::with_capacity({
+            let mut len = core::mem::size_of::<u32>();
+
+            #[cfg(feature = "orchard")]
+            {
+                len += serialized_usk_item_len(Typecode::Orchard, USK_ORCHARD_SPENDING_KEY_BYTES);
+            }
+
+            #[cfg(feature = "sapling")]
+            {
+                len += serialized_usk_item_len(
+                    Typecode::Sapling,
+                    USK_SAPLING_EXTENDED_SPENDING_KEY_BYTES,
+                );
+            }
+
+            #[cfg(feature = "transparent-inputs")]
+            {
+                len +=
+                    serialized_usk_item_len(Typecode::P2pkh, USK_TRANSPARENT_ACCOUNT_PRIVKEY_BYTES);
+            }
+
+            len
+        });
         result.write_u32::<LittleEndian>(era.id()).unwrap();
 
         #[cfg(feature = "orchard")]
         {
-            let orchard_key = self.orchard();
             CompactSize::write(&mut result, usize::try_from(Typecode::Orchard).unwrap()).unwrap();
 
-            let orchard_key_bytes = orchard_key.to_bytes();
+            let orchard_key_bytes = self.orchard().to_bytes();
             CompactSize::write(&mut result, orchard_key_bytes.len()).unwrap();
             result.write_all(orchard_key_bytes).unwrap();
         }
 
         #[cfg(feature = "sapling")]
         {
-            let sapling_key = self.sapling();
             CompactSize::write(&mut result, usize::try_from(Typecode::Sapling).unwrap()).unwrap();
 
-            let sapling_key_bytes = sapling_key.to_bytes();
+            let mut sapling_key_bytes = self.sapling().to_bytes();
             CompactSize::write(&mut result, sapling_key_bytes.len()).unwrap();
             result.write_all(&sapling_key_bytes).unwrap();
+            sapling_key_bytes.zeroize();
         }
 
         #[cfg(feature = "transparent-inputs")]
         {
-            let account_tkey = self.transparent();
             CompactSize::write(&mut result, usize::try_from(Typecode::P2pkh).unwrap()).unwrap();
 
-            let account_tkey_bytes = account_tkey.to_bytes();
+            let mut account_tkey_bytes = self.transparent().to_bytes();
             CompactSize::write(&mut result, account_tkey_bytes.len()).unwrap();
             result.write_all(&account_tkey_bytes).unwrap();
+            account_tkey_bytes.zeroize();
         }
 
         result
@@ -790,7 +828,7 @@ impl From<bip32::Error> for DerivationError {
 
 /// A key that provides the capability to recover outgoing transaction information from
 /// the block chain.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct OutgoingViewingKey([u8; 32]);
 
 impl core::fmt::Debug for OutgoingViewingKey {
@@ -808,7 +846,14 @@ impl From<[u8; 32]> for OutgoingViewingKey {
 #[cfg(feature = "sapling")]
 impl From<OutgoingViewingKey> for ::sapling::keys::OutgoingViewingKey {
     fn from(value: OutgoingViewingKey) -> Self {
-        ::sapling::keys::OutgoingViewingKey(value.0)
+        (&value).into()
+    }
+}
+
+#[cfg(feature = "sapling")]
+impl From<&OutgoingViewingKey> for ::sapling::keys::OutgoingViewingKey {
+    fn from(value: &OutgoingViewingKey) -> Self {
+        ::sapling::keys::OutgoingViewingKey(*value.as_ref())
     }
 }
 
@@ -822,7 +867,14 @@ impl From<::sapling::keys::OutgoingViewingKey> for OutgoingViewingKey {
 #[cfg(feature = "orchard")]
 impl From<OutgoingViewingKey> for ::orchard::keys::OutgoingViewingKey {
     fn from(value: OutgoingViewingKey) -> Self {
-        ::orchard::keys::OutgoingViewingKey::from(value.0)
+        (&value).into()
+    }
+}
+
+#[cfg(feature = "orchard")]
+impl From<&OutgoingViewingKey> for ::orchard::keys::OutgoingViewingKey {
+    fn from(value: &OutgoingViewingKey) -> Self {
+        ::orchard::keys::OutgoingViewingKey::from(*value.as_ref())
     }
 }
 
@@ -838,6 +890,20 @@ impl AsRef<[u8; 32]> for OutgoingViewingKey {
         &self.0
     }
 }
+
+impl Zeroize for OutgoingViewingKey {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for OutgoingViewingKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for OutgoingViewingKey {}
 
 /// A [ZIP 316](https://zips.z.cash/zip-0316) unified full viewing key.
 #[derive(Clone)]
@@ -1776,15 +1842,46 @@ mod tests {
     use {crate::address::Address, zcash_address::test_vectors, zip32::DiversifierIndex};
 
     #[cfg(feature = "unstable")]
-    use super::{Era, UnifiedSpendingKey, testing::arb_unified_spending_key};
+    use super::{
+        Era, UnifiedSpendingKey, serialized_usk_item_len, testing::arb_unified_spending_key,
+    };
+
+    #[cfg(all(feature = "orchard", feature = "unstable"))]
+    use super::USK_ORCHARD_SPENDING_KEY_BYTES;
+
+    #[cfg(all(feature = "sapling", feature = "unstable"))]
+    use super::USK_SAPLING_EXTENDED_SPENDING_KEY_BYTES;
+
+    #[cfg(all(feature = "transparent-inputs", feature = "unstable"))]
+    use super::USK_TRANSPARENT_ACCOUNT_PRIVKEY_BYTES;
 
     #[cfg(all(feature = "orchard", feature = "unstable"))]
     use subtle::ConstantTimeEq;
+
+    #[cfg(feature = "unstable")]
+    use zcash_address::unified::Typecode;
 
     #[cfg(feature = "transparent-inputs")]
     fn seed() -> Vec<u8> {
         let seed_hex = "6ef5f84def6f4b9d38f466586a8380a38593bd47c8cda77f091856176da47f26b5bd1c8d097486e5635df5a66e820d28e1d73346f499801c86228d43f390304f";
         hex::decode(seed_hex).unwrap()
+    }
+
+    #[cfg(feature = "unstable")]
+    fn expected_usk_encoded_len() -> usize {
+        let len = core::mem::size_of::<u32>();
+
+        #[cfg(feature = "orchard")]
+        let len = len + serialized_usk_item_len(Typecode::Orchard, USK_ORCHARD_SPENDING_KEY_BYTES);
+
+        let len = len
+            + serialized_usk_item_len(Typecode::Sapling, USK_SAPLING_EXTENDED_SPENDING_KEY_BYTES);
+
+        #[cfg(feature = "transparent-inputs")]
+        let len =
+            len + serialized_usk_item_len(Typecode::P2pkh, USK_TRANSPARENT_ACCOUNT_PRIVKEY_BYTES);
+
+        len
     }
 
     #[test]
@@ -2180,30 +2277,21 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(feature = "unstable")]
+    fn usk_to_bytes_has_expected_encoded_len() {
+        let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &[0; 64], AccountId::ZERO).unwrap();
+        let encoded = usk.to_bytes(Era::Orchard);
+
+        assert_eq!(encoded.len(), expected_usk_encoded_len());
+    }
+
     proptest! {
         #[test]
         #[cfg(feature = "unstable")]
         fn prop_usk_roundtrip(usk in arb_unified_spending_key(zcash_protocol::consensus::Network::MainNetwork)) {
             let encoded = usk.to_bytes(Era::Orchard);
-
-            #[allow(clippy::let_and_return)]
-            let encoded_len = {
-                let len = 4;
-
-                #[cfg(feature = "orchard")]
-                let len = len + 2 + 32;
-
-                let len = len + 2 + 169;
-
-                // Transparent part is an `xprv` transparent extended key deserialized
-                // into bytes from Base58, minus the 4 prefix bytes.
-                #[cfg(feature = "transparent-inputs")]
-                let len = len + 2 + 74;
-
-                #[allow(clippy::let_and_return)]
-                len
-            };
-            assert_eq!(encoded.len(), encoded_len);
+            assert_eq!(encoded.len(), expected_usk_encoded_len());
 
             let decoded = UnifiedSpendingKey::from_bytes(Era::Orchard, &encoded);
             let decoded = decoded.unwrap_or_else(|e| panic!("Error decoding USK: {:?}", e));
@@ -2312,6 +2400,47 @@ mod tests {
         assert_eq!(
             format!("{:?}", super::OutgoingViewingKey::from([0u8; 32])),
             "OutgoingViewingKey(\"...\")"
+        );
+    }
+
+    #[test]
+    fn ovk_needs_drop() {
+        assert!(core::mem::needs_drop::<super::OutgoingViewingKey>());
+    }
+
+    #[test]
+    #[cfg(feature = "sapling")]
+    fn ovk_sapling_conversion_roundtrip() {
+        let ovk = super::OutgoingViewingKey::from([7u8; 32]);
+
+        let from_ref = ::sapling::keys::OutgoingViewingKey::from(&ovk);
+        assert_eq!(
+            super::OutgoingViewingKey::from(from_ref).as_ref(),
+            &[7u8; 32]
+        );
+
+        let from_value = ::sapling::keys::OutgoingViewingKey::from(ovk.clone());
+        assert_eq!(
+            super::OutgoingViewingKey::from(from_value).as_ref(),
+            &[7u8; 32]
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "orchard")]
+    fn ovk_orchard_conversion_roundtrip() {
+        let ovk = super::OutgoingViewingKey::from([9u8; 32]);
+
+        let from_ref = ::orchard::keys::OutgoingViewingKey::from(&ovk);
+        assert_eq!(
+            super::OutgoingViewingKey::from(from_ref).as_ref(),
+            &[9u8; 32]
+        );
+
+        let from_value = ::orchard::keys::OutgoingViewingKey::from(ovk.clone());
+        assert_eq!(
+            super::OutgoingViewingKey::from(from_value).as_ref(),
+            &[9u8; 32]
         );
     }
 }

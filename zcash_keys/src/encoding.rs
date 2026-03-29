@@ -22,6 +22,7 @@ use {
     },
     core2::io::{self, Write},
     sapling::zip32::{ExtendedFullViewingKey, ExtendedSpendingKey},
+    secrecy::Zeroize,
     zcash_protocol::consensus::NetworkType,
 };
 
@@ -81,7 +82,7 @@ impl std::error::Error for Bech32DecodeError {}
 #[cfg(feature = "sapling")]
 fn bech32_decode<T, F>(hrp: &str, s: &str, read: F) -> Result<T, Bech32DecodeError>
 where
-    F: Fn(Vec<u8>) -> Option<T>,
+    F: Fn(&[u8]) -> Option<T>,
 {
     let parsed = CheckedHrpstring::new::<Bech32>(s)?;
     if parsed.hrp().as_str() != hrp {
@@ -90,7 +91,10 @@ where
             actual: parsed.hrp().as_str().to_owned(),
         })
     } else {
-        read(parsed.byte_iter().collect::<Vec<_>>()).ok_or(Bech32DecodeError::ReadError)
+        let mut data = parsed.byte_iter().collect::<Vec<_>>();
+        let res = read(&data).ok_or(Bech32DecodeError::ReadError);
+        data.zeroize();
+        res
     }
 }
 
@@ -214,7 +218,11 @@ impl<P: consensus::Parameters> AddressCodec<P> for UnifiedAddress {
 /// [`ExtendedSpendingKey`]: sapling::zip32::ExtendedSpendingKey
 #[cfg(feature = "sapling")]
 pub fn encode_extended_spending_key(hrp: &str, extsk: &ExtendedSpendingKey) -> String {
-    bech32_encode(hrp, |w| extsk.write(w))
+    let mut extsk_bytes = extsk.to_bytes();
+    let encoded = bech32::encode::<Bech32>(Hrp::parse_unchecked(hrp), &extsk_bytes)
+        .expect("encoding is short enough");
+    extsk_bytes.zeroize();
+    encoded
 }
 
 /// Decodes an [`ExtendedSpendingKey`] from a Bech32-encoded string.
@@ -225,7 +233,7 @@ pub fn decode_extended_spending_key(
     hrp: &str,
     s: &str,
 ) -> Result<ExtendedSpendingKey, Bech32DecodeError> {
-    bech32_decode(hrp, s, |data| ExtendedSpendingKey::read(&data[..]).ok())
+    bech32_decode(hrp, s, |data| ExtendedSpendingKey::read(data).ok())
 }
 
 /// Writes an [`ExtendedFullViewingKey`] as a Bech32-encoded string.
