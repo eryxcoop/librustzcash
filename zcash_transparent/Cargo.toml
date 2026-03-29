@@ -30,6 +30,7 @@ core2.workspace = true
 
 # - Secret management
 subtle.workspace = true
+zeroize = { workspace = true, optional = true, features = ["derive"] }
 
 # - Shielded protocols
 zcash_spec.workspace = true
@@ -84,6 +85,9 @@ test-dependencies = [
     "dep:proptest",
     "zcash_protocol/test-dependencies",
 ]
+
+## Enables use of the `zeroize` trait for scrubbing sensitive data from memory.
+zeroize = ["dep:zeroize"]
 
 [lints]
 workspace = true

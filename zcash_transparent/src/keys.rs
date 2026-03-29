@@ -2,6 +2,9 @@
 
 use core::fmt;
 
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
 use zip32::DiversifierIndex;
@@ -558,6 +561,25 @@ pub trait IncomingViewingKey: private::SealedChangeLevelKey + core::marker::Size
 #[derive(Clone)]
 pub struct ExternalIvk(ExtendedPublicKey<PublicKey>);
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for ExternalIvk {
+    fn zeroize(&mut self) {
+        // ExtendedPublicKey<PublicKey> does not implement Zeroize.
+        // It contains public data (chain code and public key).
+        // We implement the trait for consistency with other viewing keys.
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for ExternalIvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for ExternalIvk {}
+
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for ExternalIvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -592,6 +614,25 @@ impl IncomingViewingKey for ExternalIvk {}
 #[derive(Clone)]
 pub struct InternalIvk(ExtendedPublicKey<PublicKey>);
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for InternalIvk {
+    fn zeroize(&mut self) {
+        // ExtendedPublicKey<PublicKey> does not implement Zeroize.
+        // It contains public data (chain code and public key).
+        // We implement the trait for consistency with other viewing keys.
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for InternalIvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for InternalIvk {}
+
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for InternalIvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -623,6 +664,26 @@ impl IncomingViewingKey for InternalIvk {}
 #[derive(Clone)]
 pub struct EphemeralIvk(ExtendedPublicKey<PublicKey>);
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for EphemeralIvk {
+    fn zeroize(&mut self) {
+        // ExtendedPublicKey<PublicKey> does not implement Zeroize, so we clear the key material
+        // by zeroing its internal fields if we could, but they are private.
+        // However, ExtendedPublicKey contains public data, so we don't strictly need to zeroize it.
+        // We implement the trait for consistency with other viewing keys.
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for EphemeralIvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for EphemeralIvk {}
+
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for EphemeralIvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -644,6 +705,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +722,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
