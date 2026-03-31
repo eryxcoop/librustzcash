@@ -11,9 +11,6 @@ workspace.
 ## [Unreleased]
 
 ### Added
-- `WalletDb` now overrides `WalletRead::find_account_for_address` with a single SQL query,
-  replacing the `O(accounts × addresses)` scan that the default trait implementation would
-  require.
 - The following columns have been added to the exposed `v_tx_outputs` view:
   - `transaction_id`
   - `tx_mined_height`
@@ -32,6 +29,7 @@ workspace.
   - `impl zcash_client_backend::data_api::WalletWrite::import_standalone_transparent_script()`
 
 ### Changed
+- Migrated to `zcash_client_backend 0.22`
 - Migrated to `orchard 0.12`, `sapling-crypto 0.6`.
 - `zcash_client_sqlite::error::SqliteClientError` has added variant `GapAddresses`.
 - Renamed `zcash_client_sqlite::error::PubkeyImportConflict` to
