@@ -43,6 +43,7 @@ bip32.workspace = true
 #   - `SecretKey` and `PublicKey` types exposed
 secp256k1 = { workspace = true, optional = true }
 zcash_script = { workspace = true, features = ["descriptor"] }
+zeroize = { workspace = true, optional = true, features = ["derive"] }
 
 # Dependencies used internally:
 # (Breaking upgrades to these are usually backwards-compatible, but check MSRVs.)
@@ -84,6 +85,9 @@ test-dependencies = [
     "dep:proptest",
     "zcash_protocol/test-dependencies",
 ]
+
+## Enables scrubbing of sensitive data from memory.
+zeroize = ["dep:zeroize"]
 
 [lints]
 workspace = true
