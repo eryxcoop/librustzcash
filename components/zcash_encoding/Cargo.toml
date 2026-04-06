@@ -17,6 +17,7 @@ keywords = ["zcash"]
 
 [dependencies]
 core2.workspace = true
+zeroize = { workspace = true, optional = true }
 hex.workspace = true
 nonempty.workspace = true
 
@@ -26,6 +27,9 @@ proptest.workspace = true
 [features]
 default = ["std"]
 std = ["core2/std"]
+
+## Enables memory zeroization for sensitive key material.
+zeroize = ["dep:zeroize"]
 
 [lib]
 bench = false

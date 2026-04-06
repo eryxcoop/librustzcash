@@ -7223,6 +7223,7 @@ dependencies = [
  "hex",
  "nonempty",
  "proptest",
+ "zeroize",
 ]
 
 [[package]]
@@ -7376,6 +7377,7 @@ dependencies = [
  "memuse",
  "proptest",
  "zcash_encoding",
+ "zeroize",
 ]
 
 [[package]]
@@ -7425,6 +7427,7 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
+ "zeroize",
  "zip32",
 ]
 
