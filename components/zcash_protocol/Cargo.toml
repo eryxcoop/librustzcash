@@ -31,6 +31,7 @@ document-features = { workspace = true, optional = true }
 # - Encodings
 zcash_encoding.workspace = true
 core2.workspace = true
+zeroize = { workspace = true, optional = true }
 hex.workspace = true
 
 # - Test dependencies
@@ -55,6 +56,9 @@ test-dependencies = [
 
 ## Exposes support for working with a local consensus (e.g. regtest).
 local-consensus = []
+
+## Enables memory zeroization for sensitive key material.
+zeroize = ["dep:zeroize", "zcash_encoding/zeroize"]
 
 [lints]
 workspace = true

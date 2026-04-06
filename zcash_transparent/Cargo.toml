@@ -62,6 +62,7 @@ hex.workspace = true
 
 # - Transparent protocol
 ripemd.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -78,6 +79,9 @@ std = [
 
 ## Enables spending transparent notes with the transaction builder.
 transparent-inputs = ["bip32/secp256k1-ffi", "dep:secp256k1"]
+
+## Enables memory zeroization for sensitive key material.
+zeroize = ["dep:zeroize", "zcash_protocol/zeroize"]
 
 ## Exposes APIs that are useful for testing, such as `proptest` strategies.
 test-dependencies = [
