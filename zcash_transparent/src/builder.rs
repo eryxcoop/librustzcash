@@ -33,6 +33,9 @@ use {
     zcash_script::{pattern::push_script, pv, solver},
 };
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// Maximum size of a DER-encoded ECDSA signature (72 bytes) plus one SIGHASH type byte.
 #[cfg(feature = "transparent-inputs")]
 const MAX_SIG_SIZE: usize = 72 + 1;
@@ -123,6 +126,18 @@ pub struct TransparentSigningSet {
     #[cfg(feature = "transparent-inputs")]
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        for (sk, _) in self.keys.iter_mut() {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for TransparentSigningSet {}
 
 impl Default for TransparentSigningSet {
     fn default() -> Self {
