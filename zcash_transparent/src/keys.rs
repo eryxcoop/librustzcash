@@ -303,9 +303,11 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
 
         // Now decode it and return the bytes we want.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut decoded = bs58::decode(&xprv_encoded)
             .with_check(None)
             .into_vec()
@@ -332,6 +334,7 @@ impl AccountPrivKey {
         // Convert to `xprv` encoding.
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
 
         #[cfg(feature = "zeroize")]
