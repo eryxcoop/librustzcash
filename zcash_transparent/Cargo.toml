@@ -43,6 +43,7 @@ bip32.workspace = true
 #   - `SecretKey` and `PublicKey` types exposed
 secp256k1 = { workspace = true, optional = true }
 zcash_script = { workspace = true, features = ["descriptor"] }
+zeroize = { workspace = true, optional = true }
 
 # Dependencies used internally:
 # (Breaking upgrades to these are usually backwards-compatible, but check MSRVs.)
@@ -78,6 +79,9 @@ std = [
 
 ## Enables spending transparent notes with the transaction builder.
 transparent-inputs = ["bip32/secp256k1-ffi", "dep:secp256k1"]
+
+## Enables memory zeroization.
+zeroize = ["dep:zeroize", "zeroize?/derive"]
 
 ## Exposes APIs that are useful for testing, such as `proptest` strategies.
 test-dependencies = [

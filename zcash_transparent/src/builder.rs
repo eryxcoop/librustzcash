@@ -4,6 +4,9 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 use zcash_protocol::{
     consensus::BlockHeight,
     value::{BalanceError, ZatBalance, Zatoshis},
@@ -152,6 +155,19 @@ impl TransparentSigningSet {
         pubkey
     }
 }
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        #[cfg(feature = "transparent-inputs")]
+        for sk in self.keys.iter_mut().map(|(sk, _)| sk) {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl ZeroizeOnDrop for TransparentSigningSet {}
 
 // Helper function within the transparent-inputs feature gate
 #[cfg(feature = "transparent-inputs")]
