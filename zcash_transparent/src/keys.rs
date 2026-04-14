@@ -233,7 +233,6 @@ impl IntoIterator for NonHardenedChildRange {
 #[cfg(feature = "transparent-inputs")]
 pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
 
-
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for AccountPrivKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
