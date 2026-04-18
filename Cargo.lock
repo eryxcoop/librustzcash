@@ -4841,6 +4841,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-resolve"
+version = "0.1.0"
+dependencies = [
+ "zcash_proofs",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7425,6 +7432,7 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
+ "zeroize",
  "zip32",
 ]
 

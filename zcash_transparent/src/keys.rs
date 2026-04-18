@@ -4,6 +4,8 @@ use core::fmt;
 
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
@@ -300,14 +302,20 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         // Convert to `xprv` encoding.
-        let xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
 
         // Now decode it and return the bytes we want.
-        bs58::decode(xprv_encoded)
+        let res = bs58::decode(&xprv_encoded)
             .with_check(None)
             .into_vec()
             .expect("correct")
-            .split_off(Prefix::LENGTH)
+            .split_off(Prefix::LENGTH);
+
+        #[cfg(feature = "zeroize")]
+        xprv_encoded.zeroize();
+
+        res
     }
 
     /// Decodes the `AccountPrivKey` from the encoding specified for a
@@ -317,14 +325,23 @@ impl AccountPrivKey {
         // Convert to `xprv` encoding.
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
-        let xprv_encoded = bs58::encode(bytes).with_check().into_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
+
+        #[cfg(feature = "zeroize")]
+        bytes.zeroize();
 
         // Now we can parse it.
-        xprv_encoded
+        let res = xprv_encoded
             .parse::<ExtendedKey>()
             .ok()
             .and_then(|k| ExtendedPrivateKey::try_from(k).ok())
-            .map(AccountPrivKey::from_extended_privkey)
+            .map(AccountPrivKey::from_extended_privkey);
+
+        #[cfg(feature = "zeroize")]
+        xprv_encoded.zeroize();
+
+        res
     }
 }
 
@@ -658,6 +675,23 @@ impl InternalOvk {
     }
 }
 
+#[cfg(feature = "zeroize")]
+impl Zeroize for InternalOvk {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Drop for InternalOvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl ZeroizeOnDrop for InternalOvk {}
+
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
 pub struct ExternalOvk([u8; 32]);
@@ -673,6 +707,23 @@ impl ExternalOvk {
         self.0
     }
 }
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for ExternalOvk {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Drop for ExternalOvk {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl ZeroizeOnDrop for ExternalOvk {}
 
 #[cfg(test)]
 mod tests {
@@ -890,5 +941,31 @@ mod tests {
         let (internal_ovk, external_ovk) = account_pubkey.ovks_for_shielding();
         assert_eq!(format!("{:?}", internal_ovk), "InternalOvk(\"...\")");
         assert_eq!(format!("{:?}", external_ovk), "ExternalOvk(\"...\")");
+    }
+
+    #[test]
+    fn test_sensitive_types_zeroize_on_drop() {
+        use crate::builder::TransparentSigningSet;
+        use core::mem::needs_drop;
+
+        #[cfg(feature = "zeroize")]
+        {
+            assert!(needs_drop::<super::InternalOvk>());
+            assert!(needs_drop::<super::ExternalOvk>());
+            assert!(needs_drop::<TransparentSigningSet>());
+        }
+
+        #[cfg(not(feature = "zeroize"))]
+        {
+            assert!(!needs_drop::<super::InternalOvk>());
+            assert!(!needs_drop::<super::ExternalOvk>());
+            // TransparentSigningSet has a secp256k1::Secp256k1 field (when
+            // transparent-inputs is enabled) which needs drop even if our
+            // zeroize feature is disabled.
+            #[cfg(feature = "transparent-inputs")]
+            assert!(needs_drop::<TransparentSigningSet>());
+            #[cfg(not(feature = "transparent-inputs"))]
+            assert!(!needs_drop::<TransparentSigningSet>());
+        }
     }
 }
