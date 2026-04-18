@@ -208,7 +208,7 @@ version = "1.0.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.blanket]]
-version = "0.3.3"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.block-buffer]]
@@ -236,7 +236,7 @@ version = "0.5.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cast]]
-version = "0.3.3"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.cbc]]
@@ -460,7 +460,7 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.dynosaur_derive]]
-version = "0.3.3"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ecdsa]]
@@ -788,7 +788,7 @@ version = "0.8.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.nonany]]
-version = "0.3.3"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.notify]]
@@ -1136,7 +1136,7 @@ version = "0.103.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rusty-fork]]
-version = "0.3.3"
+version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.ryu]]
@@ -1680,7 +1680,7 @@ version = "1.0.1"
 criteria = "safe-to-run"
 
 [[exemptions.zeroize]]
-version = "1.6.0"
+version = "1.7.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.zerovec]]
