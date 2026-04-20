@@ -87,7 +87,7 @@ test-dependencies = [
 ]
 
 ## Enables memory scrubbing of sensitive data.
-zeroize = ["dep:zeroize", "zeroize?/derive"]
+zeroize = ["dep:zeroize"]
 
 [lints]
 workspace = true
