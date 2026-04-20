@@ -664,24 +664,8 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
-
-#[cfg(feature = "zeroize")]
-impl Zeroize for InternalOvk {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl Drop for InternalOvk {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl zeroize::ZeroizeOnDrop for InternalOvk {}
 
 impl core::fmt::Debug for InternalOvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -697,24 +681,8 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
-
-#[cfg(feature = "zeroize")]
-impl Zeroize for ExternalOvk {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl Drop for ExternalOvk {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl zeroize::ZeroizeOnDrop for ExternalOvk {}
 
 impl core::fmt::Debug for ExternalOvk {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
