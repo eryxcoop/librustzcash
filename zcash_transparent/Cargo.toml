@@ -62,6 +62,7 @@ hex.workspace = true
 
 # - Transparent protocol
 ripemd.workspace = true
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -84,6 +85,9 @@ test-dependencies = [
     "dep:proptest",
     "zcash_protocol/test-dependencies",
 ]
+
+## Enables memory scrubbing of sensitive data.
+zeroize = ["dep:zeroize"]
 
 [lints]
 workspace = true

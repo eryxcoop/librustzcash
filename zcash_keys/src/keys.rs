@@ -365,9 +365,10 @@ impl UnifiedSpendingKey {
         {
             CompactSize::write(&mut result, usize::try_from(Typecode::Orchard).unwrap()).unwrap();
 
-            let orchard_key_bytes = self.orchard().to_bytes();
+            let mut orchard_key_bytes = *self.orchard().to_bytes();
             CompactSize::write(&mut result, orchard_key_bytes.len()).unwrap();
-            result.write_all(orchard_key_bytes).unwrap();
+            result.write_all(&orchard_key_bytes).unwrap();
+            orchard_key_bytes.zeroize();
         }
 
         #[cfg(feature = "sapling")]
