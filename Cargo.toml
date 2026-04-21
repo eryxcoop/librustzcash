@@ -7,7 +7,7 @@ members = [
     "components/zcash_encoding",
     "components/zcash_protocol",
     "components/zip321",
-    "pczt",
+    "pczt", "temp_ci",
     "zcash",
     "zcash_client_backend",
     "zcash_client_memory",
