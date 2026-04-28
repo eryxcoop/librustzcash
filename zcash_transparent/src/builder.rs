@@ -117,13 +117,6 @@ impl core::error::Error for Error {}
 ///
 /// When the `transparent-inputs` feature flag is enabled, transparent signing keys can be
 /// stored in this set and used to authorize transactions with transparent inputs.
-pub struct TransparentSigningSet {
-    #[cfg(feature = "transparent-inputs")]
-    secp: secp256k1::Secp256k1<secp256k1::SignOnly>,
-    #[cfg(feature = "transparent-inputs")]
-    keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
-}
-
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 impl zeroize::Zeroize for TransparentSigningSet {
     fn zeroize(&mut self) {
@@ -143,6 +136,13 @@ impl Drop for TransparentSigningSet {
 
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
+
+pub struct TransparentSigningSet {
+    #[cfg(feature = "transparent-inputs")]
+    secp: secp256k1::Secp256k1<secp256k1::SignOnly>,
+    #[cfg(feature = "transparent-inputs")]
+    keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
+}
 
 impl Default for TransparentSigningSet {
     fn default() -> Self {
@@ -917,8 +917,7 @@ impl TransparentSignatureContext<'_, secp256k1::VerifyOnly> {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    #[cfg(feature = "transparent-inputs")]
-    use alloc::vec;
+    use super::TransparentSigningSet;
     use std::vec::Vec;
 
     use super::{Error, OutPoint, SignableInput, TransparentBuilder, TxOut};
@@ -1229,7 +1228,7 @@ mod tests {
     #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
     fn test_transparent_signing_set_zeroize() {
         use zeroize::Zeroize;
-        let mut signing_set = super::TransparentSigningSet::new();
+        let mut signing_set = TransparentSigningSet::new();
         let sk = SecretKey::from_slice(&[1u8; 32]).unwrap();
         signing_set.add_key(sk);
 

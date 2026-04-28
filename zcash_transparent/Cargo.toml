@@ -81,13 +81,13 @@ std = [
 transparent-inputs = ["bip32/secp256k1-ffi", "dep:secp256k1"]
 
 ## Exposes APIs that are useful for testing, such as `proptest` strategies.
+## Enables memory scrubbing of sensitive data.
+zeroize = ["dep:zeroize", "zeroize?/derive"]
+
 test-dependencies = [
     "dep:proptest",
     "zcash_protocol/test-dependencies",
 ]
-
-## Enables memory scrubbing of sensitive data.
-zeroize = ["dep:zeroize", "zeroize?/derive"]
 
 [lints]
 workspace = true

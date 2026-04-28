@@ -292,10 +292,8 @@ pub fn decode_extfvk_with_network(
             actual: other.to_string(),
         }),
     }?;
-    let mut data = parsed.byte_iter().collect::<Vec<_>>();
-    let fvk = ExtendedFullViewingKey::read(&data[..]).map_err(|_| Bech32DecodeError::ReadError);
-    data.zeroize();
-    let fvk = fvk?;
+    let fvk = ExtendedFullViewingKey::read(parsed.byte_iter().collect::<Vec<u8>>().as_slice())
+        .map_err(|_| Bech32DecodeError::ReadError)?;
 
     Ok((network, fvk))
 }

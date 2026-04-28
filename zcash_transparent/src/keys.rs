@@ -4,9 +4,9 @@ use core::fmt;
 
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
+use zip32::DiversifierIndex;
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
 use {
@@ -680,6 +680,7 @@ impl ExternalOvk {
 
 #[cfg(test)]
 mod tests {
+    use super::{InternalOvk, ExternalOvk};
     use bip32::ChildNumber;
     use subtle::ConstantTimeEq;
 
@@ -900,8 +901,8 @@ mod tests {
     #[cfg(feature = "zeroize")]
     fn test_ovk_zeroize() {
         use zeroize::Zeroize;
-        let mut internal = super::InternalOvk([1u8; 32]);
-        let mut external = super::ExternalOvk([2u8; 32]);
+        let mut internal = InternalOvk([1u8; 32]);
+        let mut external = ExternalOvk([2u8; 32]);
 
         internal.zeroize();
         external.zeroize();
