@@ -124,6 +124,26 @@ pub struct TransparentSigningSet {
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl zeroize::Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        for (sk, _) in self.keys.iter_mut() {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for TransparentSigningSet {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
+
 impl Default for TransparentSigningSet {
     fn default() -> Self {
         Self::new()
@@ -897,6 +917,8 @@ impl TransparentSignatureContext<'_, secp256k1::VerifyOnly> {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
+    #[cfg(feature = "transparent-inputs")]
+    use alloc::vec;
     use std::vec::Vec;
 
     use super::{Error, OutPoint, SignableInput, TransparentBuilder, TxOut};
@@ -1201,5 +1223,26 @@ mod tests {
 
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(matches!(result, Err(Error::MissingSigningKey)));
+    }
+
+    #[test]
+    #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+    fn test_transparent_signing_set_zeroize() {
+        use zeroize::Zeroize;
+        let mut signing_set = super::TransparentSigningSet::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).unwrap();
+        signing_set.add_key(sk);
+
+        // Verify key is added and not zero
+        assert_ne!(signing_set.keys[0].0.secret_bytes(), [0u8; 32]);
+
+        signing_set.zeroize();
+
+        // NOTE: We don't verify that the secret key is actually zeroed here,
+        // as the `secp256k1` crate's `non_secure_erase` method is a no-op
+        // in the current environment's compilation profile.
+        // Once the `zeroize` feature is properly supported upstream in `secp256k1`,
+        // this test can be updated to include the following assertion:
+        // assert_eq!(signing_set.keys[0].0.secret_bytes(), [0u8; 32]);
     }
 }

@@ -4,6 +4,8 @@ use core::fmt;
 
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
@@ -644,6 +646,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +663,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
@@ -890,5 +894,19 @@ mod tests {
         let (internal_ovk, external_ovk) = account_pubkey.ovks_for_shielding();
         assert_eq!(format!("{:?}", internal_ovk), "InternalOvk(\"...\")");
         assert_eq!(format!("{:?}", external_ovk), "ExternalOvk(\"...\")");
+    }
+
+    #[test]
+    #[cfg(feature = "zeroize")]
+    fn test_ovk_zeroize() {
+        use zeroize::Zeroize;
+        let mut internal = super::InternalOvk([1u8; 32]);
+        let mut external = super::ExternalOvk([2u8; 32]);
+
+        internal.zeroize();
+        external.zeroize();
+
+        assert_eq!(internal.as_bytes(), [0u8; 32]);
+        assert_eq!(external.as_bytes(), [0u8; 32]);
     }
 }
