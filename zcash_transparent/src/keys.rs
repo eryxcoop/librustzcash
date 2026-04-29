@@ -4,9 +4,9 @@ use core::fmt;
 
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
-use zip32::DiversifierIndex;
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
+use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
 use {
@@ -680,7 +680,7 @@ impl ExternalOvk {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternalOvk, ExternalOvk};
+    use super::{ExternalOvk, InternalOvk};
     use bip32::ChildNumber;
     use subtle::ConstantTimeEq;
 
