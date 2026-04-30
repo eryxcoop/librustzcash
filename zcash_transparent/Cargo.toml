@@ -33,6 +33,7 @@ subtle.workspace = true
 
 # - Shielded protocols
 zcash_spec.workspace = true
+zeroize = { workspace = true, optional = true }
 
 # - Test dependencies
 proptest = { workspace = true, optional = true }
@@ -84,6 +85,9 @@ test-dependencies = [
     "dep:proptest",
     "zcash_protocol/test-dependencies",
 ]
+
+## Enables memory scrubbing of sensitive data.
+zeroize = ["dep:zeroize", "zeroize?/derive"]
 
 [lints]
 workspace = true

@@ -4,6 +4,8 @@ use core::fmt;
 
 use bip32::ChildNumber;
 use subtle::{Choice, ConstantTimeEq};
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
@@ -424,10 +426,14 @@ impl AccountPubKey {
     ///
     /// [transparent-ovk]: https://zips.z.cash/zip-0316#deriving-internal-keys
     pub fn ovks_for_shielding(&self) -> (InternalOvk, ExternalOvk) {
-        let i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
             .with(&self.0.attrs().chain_code, &self.0.public_key().serialize());
         let ovk_external = ExternalOvk(i_ovk[..32].try_into().unwrap());
         let ovk_internal = InternalOvk(i_ovk[32..].try_into().unwrap());
+
+        #[cfg(feature = "zeroize")]
+        i_ovk.zeroize();
 
         (ovk_internal, ovk_external)
     }
@@ -644,6 +650,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +667,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
