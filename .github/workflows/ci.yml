@@ -280,8 +280,8 @@ jobs:
         shell: sh
         env:
           TOOLCHAIN: ${{steps.toolchain.outputs.name}}
-      - name: Remove lockfile to build with latest dependencies
-        run: rm Cargo.lock
+      - name: Update lockfile to build with latest dependencies
+        run: cargo update
       - name: Build crates
         run: >
           cargo build
