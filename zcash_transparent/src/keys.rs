@@ -919,5 +919,4 @@ mod tests {
         assert_eq!(format!("{:?}", internal_ovk), "InternalOvk(\"...\")");
         assert_eq!(format!("{:?}", external_ovk), "ExternalOvk(\"...\")");
     }
-
 }

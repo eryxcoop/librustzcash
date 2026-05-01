@@ -8,7 +8,7 @@ use zcash_protocol::{
     consensus::BlockHeight,
     value::{BalanceError, ZatBalance, Zatoshis},
 };
-#[cfg(feature = "zeroize")]
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use zcash_script::{
@@ -1216,5 +1216,4 @@ mod tests {
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(matches!(result, Err(Error::MissingSigningKey)));
     }
-
 }
