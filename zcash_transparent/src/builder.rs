@@ -113,6 +113,9 @@ impl fmt::Display for Error {
 
 impl core::error::Error for Error {}
 
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// A set of transparent signing keys.
 ///
 /// When the `transparent-inputs` feature flag is enabled, transparent signing keys can be
@@ -152,6 +155,19 @@ impl TransparentSigningSet {
         pubkey
     }
 }
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        #[cfg(feature = "transparent-inputs")]
+        for (sk, _) in self.keys.iter_mut() {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl ZeroizeOnDrop for TransparentSigningSet {}
 
 // Helper function within the transparent-inputs feature gate
 #[cfg(feature = "transparent-inputs")]
