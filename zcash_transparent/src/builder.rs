@@ -1225,5 +1225,4 @@ mod tests {
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(matches!(result, Err(Error::MissingSigningKey)));
     }
-
 }
