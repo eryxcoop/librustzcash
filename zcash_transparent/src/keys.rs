@@ -326,8 +326,7 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         // Convert to `xprv` encoding.
-        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
-        let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
+        let xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
 
         // Now decode it and return the bytes we want.
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
@@ -338,14 +337,20 @@ impl AccountPrivKey {
 
         #[cfg(feature = "zeroize")]
         {
-            xprv_encoded.zeroize();
+            let mut xprv_bytes = xprv_encoded.into_bytes();
+            unsafe { xprv_bytes.set_len(xprv_bytes.capacity()) };
+            xprv_bytes.zeroize();
         }
 
         let result = decoded.split_off(Prefix::LENGTH);
         #[cfg(feature = "zeroize")]
         {
-            // Scrub the prefix bytes.
-            decoded.zeroize();
+            // The original vector `decoded` still has the secret bytes in its capacity.
+            // We need to zeroize the entire capacity before dropping it.
+            unsafe {
+                decoded.set_len(decoded.capacity());
+                decoded.zeroize();
+            }
         }
         result
     }
@@ -359,11 +364,11 @@ impl AccountPrivKey {
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
 
-        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
-        let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
+        let xprv_encoded = bs58::encode(&bytes).with_check().into_string();
 
         #[cfg(feature = "zeroize")]
         {
+            unsafe { bytes.set_len(bytes.capacity()) };
             bytes.zeroize();
         }
 
@@ -376,7 +381,9 @@ impl AccountPrivKey {
 
         #[cfg(feature = "zeroize")]
         {
-            xprv_encoded.zeroize();
+            let mut xprv_bytes = xprv_encoded.into_bytes();
+            unsafe { xprv_bytes.set_len(xprv_bytes.capacity()) };
+            xprv_bytes.zeroize();
         }
 
         result
