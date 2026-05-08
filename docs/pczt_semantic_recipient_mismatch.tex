@@ -1,0 +1,540 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+
+\geometry{margin=2.5cm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    pdftitle={PCZT: desalineacion semantica entre recipient comprometido y recipient mostrado},
+    pdfauthor={Codex}
+}
+
+\lstdefinestyle{plain}{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+
+\title{Analisis tecnico del bug de desalineacion semantica en PCZT}
+\author{Documento interno de auditoria tecnica}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Resumen ejecutivo}
+
+Este documento describe, de punta a punta, el proceso que seguimos para encontrar,
+validar y convertir en PoC un bug semantico en el subsistema \texttt{PCZT}
+(\textit{Partially Constructed Zcash Transaction}) dentro de \texttt{librustzcash}.
+
+La conclusion central es la siguiente:
+
+\begin{quote}
+Es posible construir un PCZT valido cuyo output shielded comprometido paga al
+recipient \texttt{B}, pero cuya metadata auxiliar hace que la capa de
+reconstruccion de historial/salidas enviadas registre y exponga al recipient
+\texttt{A}.
+\end{quote}
+
+En otras palabras:
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Recipient comprometido criptograficamente:} \texttt{B}
+    \item \textbf{Recipient mostrado/almacenado en sent history:} \texttt{A}
+    \item \textbf{La transaccion sigue siendo valida y se acepta:} si
+\end{itemize}
+
+Lo que \textbf{si} demostramos:
+
+\begin{itemize}[leftmargin=2em]
+    \item un flujo end-to-end dentro de \texttt{zcash\_client\_backend} donde:
+    \begin{itemize}
+        \item se crea un PCZT valido,
+        \item se muta solo metadata de presentacion,
+        \item se firman los spends,
+        \item se extrae la transaccion final,
+        \item y la capa de almacenamiento de salidas enviadas persiste un recipient diferente del comprometido.
+    \end{itemize}
+\end{itemize}
+
+Lo que \textbf{no} demostramos todavia:
+
+\begin{itemize}[leftmargin=2em]
+    \item que una UI real de confirmacion de firma muestre \texttt{A} al usuario humano antes
+    de firmar;
+    \item que el mismo PoC este repetido para Orchard;
+    \item que un wallet de produccion externo a este repo renderice esta metadata como
+    fuente autoritativa en su pantalla de aprobacion.
+\end{itemize}
+
+\section{Contexto}
+
+\subsection{Que es PCZT?}
+
+\texttt{PCZT} es el formato de transaccion parcialmente construida de Zcash. La idea
+es separar la construccion de una transaccion en roles:
+
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{Creator}
+    \item \texttt{Updater}
+    \item \texttt{IoFinalizer}
+    \item \texttt{Prover}
+    \item \texttt{Signer}
+    \item \texttt{Combiner}
+    \item \texttt{Redactor}
+    \item \texttt{SpendFinalizer}
+    \item \texttt{TransactionExtractor}
+    \item \texttt{Verifier}
+\end{itemize}
+
+Cada rol agrega, valida, poda o transforma informacion.
+
+\subsection{Hipotesis inicial}
+
+La hipotesis que queriamos probar era:
+
+\begin{quote}
+Un coordinador malicioso puede hacer que un participante vea semanticamente
+``recipient A'' mientras la salida realmente comprometida por la transaccion
+paga a ``recipient B''.
+\end{quote}
+
+La forma mas concreta de esto en el codigo era:
+
+\begin{itemize}[leftmargin=2em]
+    \item recipient comprometido en campos shielded del output;
+    \item recipient de presentacion en campos auxiliares como:
+    \begin{itemize}
+        \item \texttt{user\_address}
+        \item metadata propietaria \texttt{PROPRIETARY\_OUTPUT\_INFO}
+        \item \texttt{PcztRecipient::External}
+    \end{itemize}
+\end{itemize}
+
+\section{Preguntas que guiaron la investigacion}
+
+Estas fueron las preguntas tecnicas que nos fuimos haciendo durante la busqueda:
+
+\begin{enumerate}[leftmargin=2em]
+    \item Cuales campos estan comprometidos criptograficamente y cuales son solo metadata?
+    \item El recipient que ve un signer o un consumidor downstream sale del output real o de metadata?
+    \item Hay algun chequeo generico que garantice:
+    \[
+    \texttt{user\_address} = \texttt{recipient comprometido}
+    \]
+    antes de firmar?
+    \item El \texttt{Signer} de alto nivel valida la semantica de outputs o solo la validez minima para firmar?
+    \item \texttt{extract\_and\_store\_transaction\_from\_pczt} reconstruye el recipient desde el note o desde metadata?
+    \item Si mutamos solo \texttt{user\_address}, las firmas siguen siendo validas?
+    \item Si las firmas siguen siendo validas, el historial guardado usa \texttt{A} o usa \texttt{B}?
+\end{enumerate}
+
+\section{Mapa de fuentes de verdad}
+
+\subsection{Fuente de verdad criptografica}
+
+Para outputs shielded, el recipient comprometido depende de:
+
+\begin{itemize}[leftmargin=2em]
+    \item en Sapling:
+    \begin{itemize}
+        \item \texttt{recipient}
+        \item \texttt{value}
+        \item \texttt{rseed}
+        \item ciphertext
+        \item commitment
+    \end{itemize}
+    \item en Orchard:
+    \begin{itemize}
+        \item \texttt{recipient}
+        \item \texttt{value}
+        \item \texttt{rho}
+        \item \texttt{rseed}
+        \item ciphertext
+        \item commitment
+    \end{itemize}
+\end{itemize}
+
+Esos campos alimentan:
+
+\begin{itemize}[leftmargin=2em]
+    \item el note comprometido,
+    \item la recuperacion del output,
+    \item la semantica on-chain real.
+\end{itemize}
+
+\subsection{Fuente de verdad de presentacion}
+
+Para recipients externos, en el flujo PCZT aparecen dos piezas auxiliares:
+
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{user\_address}
+    \item \texttt{PROPRIETARY\_OUTPUT\_INFO} con \texttt{PcztRecipient::External}
+\end{itemize}
+
+Estas piezas \textbf{no} estan comprometidas en sighash ni en commitments.
+
+\section{Trazado del flujo vulnerable}
+
+\subsection{Creacion del PCZT}
+
+En \texttt{zcash\_client\_backend/src/data\_api/wallet.rs}, el flujo
+\texttt{create\_pczt\_from\_proposal} hace dos cosas importantes:
+
+\begin{enumerate}[leftmargin=2em]
+    \item toma el recipient semantico de la propuesta;
+    \item lo traduce a metadata auxiliar:
+    \begin{itemize}
+        \item \texttt{user\_address}
+        \item \texttt{PROPRIETARY\_OUTPUT\_INFO}
+    \end{itemize}
+\end{enumerate}
+
+Para outputs externos, guarda:
+
+\begin{lstlisting}[style=plain]
+PcztRecipient::External
+\end{lstlisting}
+
+y tambien serializa la direccion de usuario.
+
+\subsection{Firma}
+
+El \texttt{Signer} de alto nivel:
+
+\begin{itemize}[leftmargin=2em]
+    \item calcula el \texttt{shielded\_sighash} desde \texttt{TransactionData<EffectsOnly>};
+    \item firma los spends;
+    \item no impone un chequeo output-side de consistencia entre:
+    \begin{itemize}
+        \item recipient comprometido,
+        \item y \texttt{user\_address}.
+    \end{itemize}
+\end{itemize}
+
+Esto es crucial: si mutamos \texttt{user\_address}, las firmas no cambian.
+
+\subsection{Extraccion y almacenamiento}
+
+En \texttt{extract\_and\_store\_transaction\_from\_pczt} ocurre el punto clave.
+
+La funcion:
+
+\begin{itemize}[leftmargin=2em]
+    \item reconstruye el note desde los campos comprometidos;
+    \item pero reconstruye el recipient externo para historial usando metadata:
+    \begin{itemize}
+        \item \texttt{PcztRecipient::External}
+        \item \texttt{user\_address}
+    \end{itemize}
+\end{itemize}
+
+En el helper \texttt{to\_sent\_transaction\_output(...)}:
+
+\begin{lstlisting}[style=plain]
+(PcztRecipient::External, Some(addr)) =>
+    Recipient::External { recipient_address: addr, ... }
+\end{lstlisting}
+
+O sea: el recipient externo almacenado sale de metadata, no del recipient
+comprometido del note.
+
+\section{Hipotesis exacta del exploit}
+
+La condicion necesaria y suficiente es:
+
+\begin{enumerate}[leftmargin=2em]
+    \item construir un PCZT valido que pague a \texttt{B};
+    \item mutar solo \texttt{user\_address = A};
+    \item dejar:
+    \begin{itemize}
+        \item recipient comprometido = \texttt{B}
+        \item ciphertext / note / commitment = intactos
+    \end{itemize}
+    \item firmar normalmente;
+    \item extraer/almacenar;
+    \item observar si el recipient almacenado es \texttt{A}.
+\end{enumerate}
+
+\section{PoC ejecutable}
+
+\subsection{Test agregado}
+
+Se agrego el siguiente test:
+
+\begin{lstlisting}[style=plain]
+data_api::wallet::tests::
+extract_and_store_transaction_from_pczt_can_store_metadata_recipient_distinct_from_committed_sapling_recipient
+\end{lstlisting}
+
+Archivo:
+
+\begin{lstlisting}[style=plain]
+zcash_client_backend/src/data_api/wallet.rs
+\end{lstlisting}
+
+\subsection{Que hace el test}
+
+El test hace exactamente esto:
+
+\begin{enumerate}[leftmargin=2em]
+    \item crea una transaccion valida \texttt{transparent -> Sapling};
+    \item recipient comprometido real:
+    \begin{lstlisting}[style=plain]
+    committed_recipient_addr = B
+    \end{lstlisting}
+    \item recipient falso de presentacion:
+    \begin{lstlisting}[style=plain]
+    fake_displayed_addr = A
+    \end{lstlisting}
+    \item construye el PCZT;
+    \item muta solo:
+    \begin{lstlisting}[style=plain]
+    output.user_address = A
+    \end{lstlisting}
+    \item preserva:
+    \begin{lstlisting}[style=plain]
+    PcztRecipient::External
+    \end{lstlisting}
+    \item crea proofs;
+    \item firma;
+    \item finaliza spends transparentes;
+    \item extrae la transaccion final;
+    \item recupera el recipient comprometido via OVK del sender;
+    \item persiste el resultado en un \texttt{MockWalletDb} instrumentado para capturar
+    \texttt{SentTransactionOutput};
+    \item compara el recipient recuperado con el recipient almacenado.
+\end{enumerate}
+
+\subsection{Comando de ejecucion}
+
+\begin{lstlisting}[style=plain]
+cargo test -p zcash_client_backend --features pczt \
+  extract_and_store_transaction_from_pczt_can_store_metadata_recipient_distinct_from_committed_sapling_recipient \
+  -- --nocapture
+\end{lstlisting}
+
+\subsection{Salida observada}
+
+\begin{lstlisting}[style=plain]
+running 1 test
+test data_api::wallet::tests::
+extract_and_store_transaction_from_pczt_can_store_metadata_recipient_distinct_from_committed_sapling_recipient
+... ok
+\end{lstlisting}
+
+\subsection{Resultado semantico exacto}
+
+El test prueba estas igualdades/desigualdades:
+
+\begin{itemize}[leftmargin=2em]
+    \item recipient comprometido recuperado del tx:
+    \begin{lstlisting}[style=plain]
+    recovered_recipient_addr == committed_recipient_addr == B
+    \end{lstlisting}
+    \item recipient mostrado/almacenado:
+    \begin{lstlisting}[style=plain]
+    displayed_recipient == fake_displayed_addr == A
+    \end{lstlisting}
+    \item mismatch:
+    \begin{lstlisting}[style=plain]
+    displayed_recipient != recovered_recipient_addr
+    \end{lstlisting}
+\end{itemize}
+
+\subsection{Interpretacion}
+
+Esto equivale a:
+
+\begin{quote}
+Committed recipient: B
+
+Displayed/stored recipient: A
+
+Transaction accepted: yes
+\end{quote}
+
+\section{Por que las firmas siguen siendo validas}
+
+Porque el campo mutado, \texttt{user\_address}, es metadata auxiliar.
+
+No entra en:
+
+\begin{itemize}[leftmargin=2em]
+    \item el \texttt{shielded\_sighash},
+    \item el recipient comprometido del note,
+    \item el ciphertext,
+    \item el commitment.
+\end{itemize}
+
+Entonces:
+
+\begin{itemize}[leftmargin=2em]
+    \item el recipient real \texttt{B} queda criptograficamente intacto;
+    \item la metadata \texttt{A} sigue viva para presentacion/almacenamiento;
+    \item la verificacion criptografica no detecta el desalineamiento.
+\end{itemize}
+
+\section{Que parte del sistema consume la metadata falsificada}
+
+La capa vulnerable no es la verificacion de la transaccion on-chain.
+
+La capa vulnerable es la reconstruccion de \texttt{SentTransactionOutput}:
+
+\begin{itemize}[leftmargin=2em]
+    \item \texttt{Recipient::External} se construye desde metadata,
+    \item el note/memo viene del output comprometido,
+    \item el historial resultante mezcla ambas fuentes.
+\end{itemize}
+
+Eso convierte a la inconsistencia en una vulnerabilidad de integridad semantica
+del historial/sumario.
+
+\section{Preguntas que nos hicimos hasta llegar al PoC}
+
+Estas fueron las preguntas mas utiles que guiaron el hallazgo:
+
+\begin{enumerate}[leftmargin=2em]
+    \item El recipient que ve el consumidor downstream sale del output real o de metadata?
+    \item \texttt{user\_address} esta comprometido en sighash? No.
+    \item Existe algun chequeo generico:
+    \[
+    \texttt{user\_address} = \texttt{recipient comprometido}
+    \]
+    antes de firmar? No.
+    \item \texttt{extract\_and\_store\_transaction\_from\_pczt} usa metadata para
+    clasificar recipients externos? Si.
+    \item Entonces, si mutamos solo \texttt{user\_address}, se rompe la firma? No.
+    \item Si no se rompe la firma, se persiste \texttt{A} o \texttt{B}? Se persiste
+    \texttt{A}.
+\end{enumerate}
+
+\section{Que no demostramos todavia}
+
+\subsection{Signer deception real frente a una UI humana}
+
+No demostramos todavia que exista, dentro de este repo, una UI de confirmacion
+de firma que muestre \texttt{user\_address = A} al usuario humano y le haga aprobar
+mientras el output real paga a \texttt{B}.
+
+Por eso la evaluacion final correcta es:
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Sent-history deception:} si, demostrado
+    \item \textbf{Signer-confirmation deception:} incierto en este codebase
+\end{itemize}
+
+\subsection{Orchard}
+
+No repetimos aun el mismo PoC completo para Orchard.
+
+\section{Causa raiz}
+
+La causa raiz no es una bug criptografica clasica.
+
+Es una \textbf{fractura entre dos fuentes de verdad}:
+
+\begin{itemize}[leftmargin=2em]
+    \item fuente criptografica del recipient real;
+    \item fuente auxiliar de presentacion del recipient externo.
+\end{itemize}
+
+Y esa fractura queda habilitada por tres propiedades simultaneas:
+
+\begin{enumerate}[leftmargin=2em]
+    \item la metadata de recipient externo es mutable;
+    \item esa metadata no esta comprometida en la firma;
+    \item la capa de reconstruccion/almacenado la usa como autoritativa.
+\end{enumerate}
+
+\section{Clasificacion tecnica}
+
+La mejor forma de describir el bug es:
+
+\begin{quote}
+\textbf{semantic binding failure between committed shielded recipient and
+stored/displayed external recipient metadata in PCZT-derived sent-history flows}
+\end{quote}
+
+\section{Severidad e interpretacion}
+
+\subsection{Lo que si es}
+
+\begin{itemize}[leftmargin=2em]
+    \item bug de integridad semantica;
+    \item coordinador malicioso puede sembrar metadata enganosa;
+    \item el sistema puede almacenar y presentar esa metadata como recipient externo.
+\end{itemize}
+
+\subsection{Lo que no es}
+
+\begin{itemize}[leftmargin=2em]
+    \item no es forgery;
+    \item no es bypass de ownership de spend;
+    \item no es funds theft demostrada por si sola;
+    \item no es inconsistencia de consenso.
+\end{itemize}
+
+\section{Recomendaciones de remediacion}
+
+\begin{enumerate}[leftmargin=2em]
+    \item No usar \texttt{user\_address} como fuente autoritativa de recipient externo si
+    no fue verificada contra el recipient comprometido.
+    \item Recomputar recipient de salida desde campos comprometidos siempre que sea posible.
+    \item En el signer de alto nivel, agregar validacion explicita de coherencia output-side.
+    \item Si se conserva metadata de presentacion, marcarla explicitamente como advisory y
+    no mezclarla con objetos de ``recipient real''.
+    \item Agregar el mismo PoC para Orchard.
+\end{enumerate}
+
+\section{Respuesta final}
+
+\subsection{Is the mismatch fully demonstrated end-to-end?}
+
+\textbf{PARTIALLY}
+
+Explicacion exacta:
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Si}, esta completamente demostrado end-to-end para:
+    \begin{itemize}
+        \item construccion del PCZT,
+        \item mutacion de metadata,
+        \item firma,
+        \item extraccion,
+        \item almacenamiento de recipient mostrado/guardado.
+    \end{itemize}
+    \item \textbf{No}, no esta completamente demostrado para:
+    \begin{itemize}
+        \item una pantalla real de confirmacion de firma mostrada a un humano.
+    \end{itemize}
+\end{itemize}
+
+La respuesta operacional mas precisa es:
+
+\begin{quote}
+El mismatch esta \textbf{plenamente demostrado} como bug de sent-history /
+stored-recipient deception dentro del flujo PCZT de librustzcash.
+
+Todavia esta \textbf{sin demostrar} como bug de signer-confirmation deception en una UI real.
+\end{quote}
+
+\end{document}
