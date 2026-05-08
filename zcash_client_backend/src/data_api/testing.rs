@@ -62,7 +62,9 @@ use super::{
     },
 };
 use crate::{
-    data_api::{MaxSpendMode, TargetValue, error::RewindError, wallet::TargetHeight},
+    data_api::{
+        error::RewindError, wallet::TargetHeight, MaxSpendMode, OutputOfSentTx, TargetValue,
+    },
     fees::{
         ChangeStrategy, DustOutputPolicy, StandardFeeRule,
         standard::{self, SingleOutputChangeStrategy},
@@ -71,7 +73,7 @@ use crate::{
     proto::compact_formats::{
         self, CompactBlock, CompactSaplingOutput, CompactSaplingSpend, CompactTx,
     },
-    wallet::{Note, NoteId, OvkPolicy, ReceivedNote, WalletTransparentOutput},
+    wallet::{Note, NoteId, OvkPolicy, ReceivedNote, Recipient, WalletTransparentOutput},
 };
 
 #[cfg(feature = "transparent-inputs")]
@@ -2566,6 +2568,7 @@ impl NoteCommitments {
 /// A mock wallet data source that implements the bare minimum necessary to function.
 pub struct MockWalletDb {
     pub network: Network,
+    pub sent_outputs_by_tx: HashMap<TxId, Vec<OutputOfSentTx>>,
     pub sapling_tree: ShardTree<
         MemoryShardStore<::sapling::Node, BlockHeight>,
         { SAPLING_SHARD_HEIGHT * 2 },
@@ -2587,6 +2590,7 @@ impl MockWalletDb {
     pub fn new(network: Network) -> Self {
         Self {
             network,
+            sent_outputs_by_tx: HashMap::new(),
             sapling_tree: ShardTree::new(MemoryShardStore::empty(), 100),
             #[cfg(feature = "orchard")]
             orchard_tree: ShardTree::new(MemoryShardStore::empty(), 100),
@@ -2981,8 +2985,46 @@ impl WalletWrite for MockWalletDb {
 
     fn store_transactions_to_be_sent(
         &mut self,
-        _transactions: &[SentTransaction<Self::AccountId>],
+        transactions: &[SentTransaction<Self::AccountId>],
     ) -> Result<(), Self::Error> {
+        for tx in transactions {
+            let outputs = tx
+                .outputs()
+                .iter()
+                .map(|output| {
+                    let external_recipient = match output.recipient() {
+                        Recipient::External {
+                            recipient_address, ..
+                        } => zcash_keys::address::Address::try_from_zcash_address(
+                            &self.network,
+                            recipient_address.clone(),
+                        )
+                        .ok(),
+                        #[cfg(feature = "transparent-inputs")]
+                        Recipient::EphemeralTransparent {
+                            ephemeral_address, ..
+                        } => Some((*ephemeral_address).into()),
+                        Recipient::InternalAccount {
+                            external_address, ..
+                        } => external_address.as_ref().and_then(|addr| {
+                            zcash_keys::address::Address::try_from_zcash_address(
+                                &self.network,
+                                addr.clone(),
+                            )
+                            .ok()
+                        }),
+                    };
+
+                    OutputOfSentTx::from_parts(
+                        output.value(),
+                        external_recipient,
+                        #[cfg(feature = "transparent-inputs")]
+                        None,
+                    )
+                })
+                .collect::<Vec<_>>();
+            self.sent_outputs_by_tx.insert(tx.tx().txid(), outputs);
+        }
         Ok(())
     }
 

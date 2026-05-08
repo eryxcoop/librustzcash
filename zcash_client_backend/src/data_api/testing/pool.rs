@@ -81,7 +81,7 @@ use zcash_protocol::PoolType;
 
 #[cfg(feature = "pczt")]
 use {
-    pczt::roles::{prover::Prover, signer::Signer},
+    pczt::roles::{prover::Prover, signer::Signer, updater::Updater},
     rand_core::OsRng,
     transparent::builder::TransparentSigningSet,
     zcash_primitives::transaction::builder::{BuildConfig, Builder},
@@ -5937,6 +5937,153 @@ pub fn pczt_single_step<P0: ShieldedPoolTester, P1: ShieldedPoolTester, Dsf>(
 
     let (h, _) = st.generate_next_block_including(txid);
     st.scan_cached_blocks(h, 1);
+}
+
+#[cfg(feature = "pczt")]
+pub fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTester, Dsf>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap(),
+                network.activation_height(NetworkUpgrade::Canopy).unwrap() + ZIP212_GRACE_PERIOD,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([7; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+
+    let account = st.test_account().cloned().unwrap();
+    let sender_fvk = T::test_account_fvk(&st);
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+    let fake_displayed = T::random_address(OsRng);
+
+    assert_ne!(real_recipient, fake_displayed);
+
+    let note_value = Zatoshis::const_from_u64(350000);
+    st.generate_next_block(&sender_fvk, AddressType::DefaultExternal, note_value);
+    st.scan_cached_blocks(account.birthday().height(), 1);
+
+    let transfer_amount = Zatoshis::const_from_u64(200000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    let pczt_mismatched = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_user_address(
+                            fake_displayed.to_zcash_address(st.network()).encode(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_user_address(
+                            fake_displayed.to_zcash_address(st.network()).encode(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_mismatched, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let tx = st.wallet().get_transaction(txid).unwrap().unwrap();
+
+    let recovered =
+        T::try_output_recovery(st.network(), account.birthday().height(), &tx, &sender_fvk)
+            .expect("sender OVK should recover the external output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+    assert_ne!(recovered_to, fake_displayed);
+
+    let sent_outputs = st.wallet().get_sent_outputs(&txid).unwrap();
+    let displayed = sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("an external sent output should exist");
+
+    assert_eq!(displayed, fake_displayed);
+    assert_ne!(displayed, recovered_to);
 }
 
 /// Ensure that wallet recovery recomputes fees.

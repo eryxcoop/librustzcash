@@ -2673,3 +2673,207 @@ where
         None,
     )
 }
+
+#[cfg(all(test, feature = "pczt"))]
+mod tests {
+    use pczt::roles::{
+        creator::Creator, io_finalizer::IoFinalizer, prover::Prover, signer::Signer,
+        spend_finalizer::SpendFinalizer, tx_extractor::TransactionExtractor, updater::Updater,
+    };
+    use rand_core::OsRng;
+    use sapling::zip32::ExtendedSpendingKey;
+    use transparent::keys::IncomingViewingKey;
+    use zcash_keys::address::Address;
+    use zcash_primitives::transaction::{
+        builder::{BuildConfig, Builder},
+        fees::zip317,
+    };
+    use zcash_proofs::prover::LocalTxProver;
+    use zcash_protocol::{
+        PoolType,
+        consensus::{MainNetwork, Network},
+        memo::MemoBytes,
+        value::Zatoshis,
+    };
+
+    use crate::{data_api::testing::MockWalletDb, wallet::Recipient};
+
+    use super::{
+        PROPRIETARY_OUTPUT_INFO, PROPRIETARY_PROPOSAL_INFO, PcztRecipient, ProposalInfo,
+        extract_and_store_transaction_from_pczt,
+    };
+
+    #[test]
+    fn extract_and_store_transaction_from_pczt_can_store_metadata_recipient_distinct_from_committed_sapling_recipient()
+     {
+        let params = MainNetwork;
+
+        let transparent_account_sk =
+            transparent::keys::AccountPrivKey::from_seed(&params, &[1; 32], zip32::AccountId::ZERO)
+                .unwrap();
+        let (transparent_addr, address_index) = transparent_account_sk
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let transparent_sk = transparent_account_sk
+            .derive_external_secret_key(address_index)
+            .unwrap();
+        let secp = secp256k1::Secp256k1::signing_only();
+        let transparent_pubkey = transparent_sk.public_key(&secp);
+
+        let sender_sapling = ExtendedSpendingKey::master(&[9; 32]);
+        let sender_dfvk = sender_sapling.to_diversifiable_full_viewing_key();
+        let recipient_extsk = ExtendedSpendingKey::master(&[2; 32]);
+        let (_, committed_recipient) = recipient_extsk.default_address();
+        let committed_recipient_addr: Address = committed_recipient.into();
+        let fake_displayed_extsk = ExtendedSpendingKey::master(&[3; 32]);
+        let (_, fake_displayed) = fake_displayed_extsk.default_address();
+        let fake_displayed_addr: Address = fake_displayed.into();
+
+        assert_ne!(committed_recipient_addr, fake_displayed_addr);
+
+        let utxo = transparent::bundle::OutPoint::fake();
+        let coin = transparent::bundle::TxOut::new(
+            Zatoshis::const_from_u64(1_000_000),
+            transparent_addr.script().into(),
+        );
+
+        let mut builder = Builder::new(
+            params,
+            10_000_000.into(),
+            BuildConfig::Standard {
+                sapling_anchor: Some(sapling::Anchor::empty_tree()),
+                orchard_anchor: Some(orchard::Anchor::empty_tree()),
+            },
+        );
+        builder
+            .add_transparent_p2pkh_input(transparent_pubkey, utxo, coin.clone())
+            .unwrap();
+        builder
+            .add_sapling_output::<core::convert::Infallible>(
+                Some(sender_dfvk.to_ovk(zip32::Scope::External)),
+                committed_recipient,
+                Zatoshis::const_from_u64(100_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+        builder
+            .add_sapling_output::<core::convert::Infallible>(
+                Some(sender_dfvk.to_ovk(zip32::Scope::Internal)),
+                sender_dfvk.change_address().1,
+                Zatoshis::const_from_u64(885_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+
+        let build_result = builder
+            .build_for_pczt(OsRng, &zip317::FeeRule::standard())
+            .unwrap();
+        let external_output_index = build_result
+            .sapling_meta
+            .output_index(0)
+            .expect("sapling output exists");
+
+        let created = Creator::build_from_parts(build_result.pczt_parts).unwrap();
+        let io_finalized = IoFinalizer::new(created).finalize_io().unwrap();
+
+        let pczt = Updater::new(io_finalized)
+            .update_global_with(|mut updater| {
+                updater.set_proprietary(
+                    PROPRIETARY_PROPOSAL_INFO.into(),
+                    postcard::to_allocvec(&ProposalInfo::<u32> {
+                        from_account: 0,
+                        target_height: zcash_protocol::consensus::BlockHeight::from_u32(10_000_000)
+                            .into(),
+                    })
+                    .unwrap(),
+                )
+            })
+            .update_sapling_with(|mut updater| {
+                updater.update_output_with(external_output_index, |mut output_updater| {
+                    output_updater
+                        .set_user_address(fake_displayed_addr.to_zcash_address(&params).encode());
+                    output_updater.set_proprietary(
+                        PROPRIETARY_OUTPUT_INFO.into(),
+                        postcard::to_allocvec(&PcztRecipient::<u32>::External).unwrap(),
+                    );
+                    Ok(())
+                })?;
+                Ok(())
+            })
+            .unwrap()
+            .finish();
+
+        let sapling_prover = LocalTxProver::bundled();
+        let orchard_pk = ::orchard::circuit::ProvingKey::build();
+        let pczt_proven = Prover::new(pczt)
+            .create_orchard_proof(&orchard_pk)
+            .unwrap()
+            .create_sapling_proofs(&sapling_prover, &sapling_prover)
+            .unwrap()
+            .finish();
+
+        let mut signer = Signer::new(pczt_proven.clone()).unwrap();
+        signer.sign_transparent(0, &transparent_sk).unwrap();
+        let pczt_authorized = signer.finish();
+
+        let spend_vk_output_vk = sapling_prover.verifying_keys();
+        let finalized_spends = SpendFinalizer::new(pczt_authorized.clone())
+            .finalize_spends()
+            .unwrap();
+        let tx = TransactionExtractor::new(finalized_spends)
+            .with_sapling(&spend_vk_output_vk.0, &spend_vk_output_vk.1)
+            .extract()
+            .unwrap();
+
+        let recovered_recipient_addr = tx
+            .sapling_bundle()
+            .unwrap()
+            .shielded_outputs()
+            .iter()
+            .filter_map(|output| {
+                sapling::note_encryption::try_sapling_output_recovery(
+                    &sender_dfvk.to_ovk(zip32::Scope::External),
+                    output,
+                    sapling::note_encryption::Zip212Enforcement::On,
+                )
+                .map(|(_, recipient, _)| Address::from(recipient))
+            })
+            .find(|addr| addr == &committed_recipient_addr)
+            .expect("sender ovk should recover the committed recipient");
+
+        assert_eq!(recovered_recipient_addr, committed_recipient_addr);
+        assert_ne!(recovered_recipient_addr, fake_displayed_addr);
+
+        let mut wallet_db = MockWalletDb::new(Network::MainNetwork);
+        let txid = extract_and_store_transaction_from_pczt::<_, u32>(
+            &mut wallet_db,
+            pczt_authorized,
+            Some((&spend_vk_output_vk.0, &spend_vk_output_vk.1)),
+            #[cfg(feature = "orchard")]
+            None,
+        )
+        .unwrap();
+
+        let stored_outputs = wallet_db
+            .sent_outputs_by_tx
+            .get(&txid)
+            .expect("sent outputs should be stored");
+        let displayed_recipient = stored_outputs
+            .iter()
+            .find_map(|o| o.external_recipient().cloned())
+            .expect("external recipient should be stored");
+
+        assert_eq!(displayed_recipient, fake_displayed_addr);
+        assert_ne!(displayed_recipient, recovered_recipient_addr);
+
+        assert!(matches!(
+            Recipient::<u32>::External {
+                recipient_address: fake_displayed_addr.to_zcash_address(&params),
+                output_pool: PoolType::Shielded(zcash_protocol::ShieldedProtocol::Sapling),
+            },
+            Recipient::External { .. }
+        ));
+    }
+}

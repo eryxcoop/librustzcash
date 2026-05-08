@@ -412,6 +412,14 @@ pub(crate) fn pczt_single_step<P0: ShieldedPoolTester, P1: ShieldedPoolTester>()
     )
 }
 
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_be_misled_by_user_address::<
+        T,
+        _,
+    >(TestDbFactory::default(), BlockCache::new())
+}
+
 #[cfg(feature = "transparent-inputs")]
 pub(crate) fn wallet_recovery_computes_fees<T: ShieldedPoolTester>() {
     use rusqlite::named_params;
