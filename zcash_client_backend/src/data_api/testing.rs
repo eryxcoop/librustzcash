@@ -63,7 +63,7 @@ use super::{
 };
 use crate::{
     data_api::{
-        error::RewindError, wallet::TargetHeight, MaxSpendMode, OutputOfSentTx, TargetValue,
+        MaxSpendMode, OutputOfSentTx, TargetValue, error::RewindError, wallet::TargetHeight,
     },
     fees::{
         ChangeStrategy, DustOutputPolicy, StandardFeeRule,
