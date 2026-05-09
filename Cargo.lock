@@ -825,6 +825,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core3"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cbcb5224cf18d0beaecf52c52a58b248213de007fa72bc212d916224e26ceb8"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "cpp_demangle"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1599,7 +1608,7 @@ version = "0.2.2"
 dependencies = [
  "blake2b_simd",
  "cc",
- "core2",
+ "core3",
  "document-features",
  "hex",
 ]
@@ -7031,7 +7040,7 @@ dependencies = [
  "assert_matches",
  "bech32",
  "bs58",
- "core2",
+ "core3",
  "f4jumble",
  "proptest",
  "zcash_encoding",
@@ -7219,7 +7228,7 @@ dependencies = [
 name = "zcash_encoding"
 version = "0.3.0"
 dependencies = [
- "core2",
+ "core3",
  "hex",
  "nonempty",
  "proptest",
@@ -7265,7 +7274,7 @@ dependencies = [
  "bls12_381",
  "bs58",
  "byteorder",
- "core2",
+ "core3",
  "document-features",
  "group",
  "hex",
@@ -7313,7 +7322,7 @@ dependencies = [
  "blake2b_simd",
  "block-buffer 0.11.0-rc.3",
  "chacha20poly1305",
- "core2",
+ "core3",
  "criterion 0.5.1",
  "crypto-common 0.2.0-rc.1",
  "document-features",
@@ -7368,7 +7377,7 @@ dependencies = [
 name = "zcash_protocol"
 version = "0.7.2"
 dependencies = [
- "core2",
+ "core3",
  "document-features",
  "hex",
  "incrementalmerkletree",
@@ -7410,7 +7419,7 @@ version = "0.6.3"
 dependencies = [
  "bip32",
  "bs58",
- "core2",
+ "core3",
  "document-features",
  "getset",
  "hex",
@@ -7425,6 +7434,7 @@ dependencies = [
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
+ "zeroize",
  "zip32",
 ]
 

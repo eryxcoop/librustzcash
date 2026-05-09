@@ -291,6 +291,10 @@ criteria = "safe-to-deploy"
 version = "0.3.3"
 criteria = "safe-to-deploy"
 
+[[exemptions.core3]]
+version = "0.1.2"
+criteria = "safe-to-deploy"
+
 [[exemptions.cpufeatures]]
 version = "0.2.11"
 criteria = "safe-to-deploy"
