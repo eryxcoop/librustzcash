@@ -165,3 +165,9 @@ fn scan_cached_blocks_detects_spends_out_of_order() {
 fn receive_two_notes_with_same_value() {
     testing::pool::receive_two_notes_with_same_value::<SaplingPoolTester>()
 }
+
+#[test]
+#[cfg(feature = "pczt-tests")]
+fn pczt_sent_history_can_be_misled_by_user_address() {
+    testing::pool::pczt_sent_history_can_be_misled_by_user_address::<SaplingPoolTester>()
+}

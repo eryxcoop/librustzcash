@@ -36,6 +36,7 @@ Within the scope of librustzcash’s PCZT + sent-history reconstruction flow, I 
 What this proves:
 - the sent-history reconstruction path can trust recipient metadata that is not cryptographically bound to the committed output recipient.
 - this behavior is reproducible in backend tests for both Sapling and Orchard outputs.
+- this behavior is also reproducible against the concrete `zcash_client_memory` wallet-store implementation for both Sapling and Orchard.
 - a local Zallet harness can be made to surface the forged Orchard recipient in transaction-history RPC output once fed a transaction derived from a malicious PCZT.
 
 What it does **not** prove:
@@ -246,6 +247,111 @@ So the demonstrated exploit is strongest as:
 not yet:
 - **human signer-confirmation deception**
 
+## Why the PoC is still valid without `create_pczt_from_proposal`
+
+One possible objection is: the successful runtime PoCs do not start from the exact
+high-level helper `create_pczt_from_proposal`, so maybe they only demonstrate misuse
+of lower-level internals rather than a real vulnerability.
+
+I do **not** think that objection holds.
+
+Why:
+
+1. The PoCs use public, intended APIs throughout:
+   - `Builder::build_for_pczt`
+   - `Creator::build_from_parts`
+   - `IoFinalizer`
+   - `Updater`
+   - `Prover`
+   - `Signer`
+   - `SpendFinalizer`
+   - `TransactionExtractor`
+   - `extract_and_store_transaction_from_pczt`
+2. The exploit does not rely on byte-level patching, invalid serialization, `unsafe`, or
+   private-field mutation.
+3. PCZT exists precisely for multi-party / coordinator / hardware-wallet style workflows.
+   In that threat model, a malicious or semantically dishonest coordinator is a natural
+   adversary, not an absurd out-of-scope caller.
+4. Therefore the right security question is not “does the honest helper produce this state
+   by itself?”, but “can a caller using the public PCZT API construct or mutate a valid
+   PCZT whose displayed semantics diverge from its committed semantics?”
+
+That question is answered **yes** by the current PoCs.
+
+So the strongest accurate framing is:
+
+- this is a public-API semantic-integrity issue in the PCZT workflow;
+- it is not merely a bug in `create_pczt_from_proposal`;
+- and it is not invalidated by the fact that the adversarial test uses lower-level public
+  PCZT roles instead of only the honest high-level helper.
+
+## Why `PcztRecipient::External` matters in the exploit
+
+Another subtle point is that mutating only `user_address` is not by itself sufficient to
+make the fake recipient appear in sent history.
+
+The reason is that `extract_and_store_transaction_from_pczt` reconstructs two pieces of
+information independently:
+
+1. the committed shielded note from note fields such as `recipient`, `value`, `rseed`
+   (and `rho` for Orchard), and
+2. the recipient *classification* from proprietary metadata,
+   specifically `PROPRIETARY_OUTPUT_INFO -> PcztRecipient`.
+
+For external shielded outputs, the decisive match is:
+
+- `PcztRecipient::External`
+- plus `Some(user_address)`
+
+which is what causes the code to build:
+
+- `Recipient::External { recipient_address: addr, ... }`
+
+If the output is not marked `External`:
+
+- the sent-history code may treat it as internal,
+- or skip it as dummy / unrecoverable if the proprietary metadata is absent,
+- and the forged displayed external recipient will not materialize in the same way.
+
+So the exploit requires:
+
+- preserving the output's classification as an external recipient, and
+- changing the advisory displayed address attached to that classification.
+
+This is not an artificial extra condition. In the honest high-level flow,
+`create_pczt_from_proposal` already writes `PcztRecipient::External` for external outputs.
+Our lower-level PoCs simply preserve or recreate that same public metadata state while
+changing the displayed address.
+
+## Is this just misuse of the `Updater` role?
+
+I do not think the best reading is “the PoC abuses `Updater` in a way the library never
+intended, so the result is not a real vulnerability.”
+
+The more precise reading is:
+
+- semantically, yes, the coordinator is behaving dishonestly;
+- technically, no, the library does not enforce a contract that forbids this mutation.
+
+Why:
+
+1. The `Updater` role is intentionally broad and public-facing: “anyone can contribute.”
+2. The updater APIs expose mutation of bundle fields and proprietary metadata directly.
+3. `IoFinalizer` freezes transaction effects by lowering `Global.tx_modifiable`, but that
+   mechanism protects committed transaction structure, not advisory display metadata like
+   `user_address`.
+4. No later generic role re-checks that:
+   - `user_address`
+   - `PcztRecipient::External`
+   - and the committed output recipient
+   remain semantically aligned.
+
+So the PoC is not relying on undefined behavior. It relies on a missing invariant:
+
+> the library never re-binds recipient presentation metadata to the committed shielded recipient
+
+That missing invariant is exactly the bug.
+
 ## Exploit engineering
 
 ### Exact exploit goal
@@ -436,7 +542,36 @@ The Orchard test:
 
 This shows the same semantic split is not Sapling-specific; it also holds for Orchard in the backend path.
 
-### PoC attempt 5: local Zallet history/RPC harness
+### PoC attempt 5: `zcash_client_memory` implementation harness
+
+Succeeded.
+
+Implemented tests:
+
+- `testing::pool::sapling::pczt_sent_history_can_be_misled_by_user_address`
+- `testing::pool::orchard::pczt_sent_history_can_be_misled_by_user_address`
+
+Command:
+
+```sh
+cargo test -p zcash_client_memory --features pczt-tests pczt_sent_history_can_be_misled_by_user_address -- --nocapture
+```
+
+Observed result:
+
+```text
+running 2 tests
+test testing::pool::sapling::pczt_sent_history_can_be_misled_by_user_address ... ok
+test testing::pool::orchard::pczt_sent_history_can_be_misled_by_user_address ... ok
+```
+
+What this adds beyond the backend-only PoCs:
+
+1. The same committed-recipient vs displayed-recipient mismatch survives not only through `extract_and_store_transaction_from_pczt`, but also through a concrete wallet-store implementation that records and returns sent-output history.
+2. This removes the argument that the issue is limited to a synthetic mock DB used only in unit tests.
+3. It still does not prove reachability in every downstream wallet, but it does prove the bug against one real storage backend in this repository.
+
+### PoC attempt 6: local Zallet history/RPC harness
 
 Succeeded as a local harness in a forked checkout of `zcash/wallet` (Zallet).
 
@@ -535,7 +670,7 @@ So the best current reading is:
 ## Remaining blockers
 
 1. I still do not have a proof that an actual human signer UI in a deployed wallet shows `A` before approval.
-2. `zcash_client_sqlite --features pczt-tests` still has unrelated build breakage, so a second persistence-layer confirmation remains blocked there for both Sapling and Orchard.
+2. `zcash_client_sqlite --features pczt-tests` still has unrelated build breakage, so SQLite-backed confirmation remains blocked there for both Sapling and Orchard.
 3. The current Zallet extension is a local harness result, not a proof that Zallet's current production send path is PCZT-reachable.
 4. The current PoC proves backend/history deception, not an actual signer-approval screen.
 
@@ -592,7 +727,7 @@ Yes.
 - Zallet currently appears to avoid direct reachability through its normal send path because it does not yet consume PCZTs there; the demonstrated Zallet impact today is confined to a local malicious-PCZT harness.
 
 **Bounty viability:** Medium  
-**Recommended next test:** demonstrate that a user-facing signer or sent-history UI actually surfaces `A` under a production-reachable workflow, and if possible find a real wallet path that imports or reconstructs malicious-PCZT-derived transactions without requiring a local harness.
+**Recommended next test:** demonstrate that a user-facing signer or sent-history UI actually surfaces `A` under a production-reachable workflow, and if possible reproduce the same mismatch through the SQLite-backed persistence layer once that crate is back in sync.
 
 ### [P3] High-level shielded signer performs only opportunistic semantic verification, allowing pruned spends to remain signable
 

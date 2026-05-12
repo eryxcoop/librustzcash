@@ -495,7 +495,15 @@ Final triage outcome:
    The remaining promising area is not raw signature forgery but cross-role misuse: partially-pruned PCZTs, incomplete semantic validation before signing, and any path where a signer can be induced to bless a misleading transaction view.
 
 2. Orchard wallet-layer reconstruction invariants.
-   The Orchard rehydration path mirrors the Sapling logic but has more moving pieces (`rho`, `rseed`, `RandomSeed::from_bytes`, `Note::from_parts`). A backend PCZT sent-history PoC now shows the same committed-recipient vs displayed-recipient split for Orchard as for Sapling, and a local Zallet harness shows that a downstream history/RPC layer can also trust the cached fake recipient. But that Zallet result is not yet production-reachable because Zallet does not currently use PCZT in its normal send path.
+   The Orchard rehydration path mirrors the Sapling logic but has more moving pieces (`rho`, `rseed`, `RandomSeed::from_bytes`, `Note::from_parts`). Backend PCZT sent-history PoCs now show the same committed-recipient vs displayed-recipient split for Orchard as for Sapling; the same mismatch also reproduces against the concrete `zcash_client_memory` backend for both pools; and a local Zallet harness shows that a downstream history/RPC layer can also trust the cached fake recipient. But the Zallet result is not yet production-reachable because Zallet does not currently use PCZT in its normal send path.
+
+   One important clarification from the PCZT work: the exploit remains valid even when demonstrated
+   via lower-level public PCZT APIs rather than only through `create_pczt_from_proposal`, because it
+   uses intended public roles (`Creator`, `Updater`, `IoFinalizer`, `Prover`, `Signer`,
+   `TransactionExtractor`) rather than private mutation or malformed serialization. Likewise, the
+   exploit requires preserving `PcztRecipient::External`, because the display bug is not just
+   “forged address string exists” but “forged address string is trusted under the external-recipient
+   classification.”
 
 3. zcashd wallet presentation caching.
    I checked whether the legacy `zcashd` wallet appears to inherit the same bug shape. At present it does not look like a direct extension target: `zcashd` does not currently use PCZT in its wallet send path, and its cached recipient presentation layer is mediated by `RecipientMapping` plus `WriteRecipientMapping`, which verifies that the cached UA contains the concrete receiver before persisting it. That looks materially stronger than the free-form `user_address` metadata split in `librustzcash` PCZT flows.

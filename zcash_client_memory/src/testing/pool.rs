@@ -222,3 +222,11 @@ pub(crate) fn receive_two_notes_with_same_value<T: ShieldedPoolTester>() {
         MemBlockCache::new(),
     )
 }
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_be_misled_by_user_address::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
