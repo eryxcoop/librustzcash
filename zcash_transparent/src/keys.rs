@@ -3,9 +3,9 @@
 use core::fmt;
 
 use bip32::ChildNumber;
+use subtle::{Choice, ConstantTimeEq};
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use subtle::{Choice, ConstantTimeEq};
 use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
