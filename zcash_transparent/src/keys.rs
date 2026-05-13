@@ -3,6 +3,8 @@
 use core::fmt;
 
 use bip32::ChildNumber;
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 use subtle::{Choice, ConstantTimeEq};
 use zip32::DiversifierIndex;
 
@@ -300,14 +302,31 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         // Convert to `xprv` encoding.
-        let xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
 
         // Now decode it and return the bytes we want.
-        bs58::decode(xprv_encoded)
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_bytes = bs58::decode(&xprv_encoded)
             .with_check(None)
             .into_vec()
-            .expect("correct")
-            .split_off(Prefix::LENGTH)
+            .expect("correct");
+
+        let result = xprv_bytes.split_off(Prefix::LENGTH);
+
+        #[cfg(feature = "zeroize")]
+        {
+            xprv_encoded.zeroize();
+            // We need to zeroize the entire original allocation of `xprv_bytes`.
+            // `split_off` leaves the original vector with its original capacity.
+            // We set its length to its capacity to ensure all allocated bytes are zeroized.
+            unsafe {
+                xprv_bytes.set_len(xprv_bytes.capacity());
+            }
+            xprv_bytes.zeroize();
+        }
+
+        result
     }
 
     /// Decodes the `AccountPrivKey` from the encoding specified for a
@@ -315,16 +334,26 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
         // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
-        let xprv_encoded = bs58::encode(bytes).with_check().into_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
 
         // Now we can parse it.
-        xprv_encoded
+        let result = xprv_encoded
             .parse::<ExtendedKey>()
             .ok()
             .and_then(|k| ExtendedPrivateKey::try_from(k).ok())
-            .map(AccountPrivKey::from_extended_privkey)
+            .map(AccountPrivKey::from_extended_privkey);
+
+        #[cfg(feature = "zeroize")]
+        {
+            bytes.zeroize();
+            xprv_encoded.zeroize();
+        }
+
+        result
     }
 }
 
@@ -644,6 +673,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +690,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
