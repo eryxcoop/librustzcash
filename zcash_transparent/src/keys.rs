@@ -235,15 +235,9 @@ pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 impl Zeroize for AccountPrivKey {
     fn zeroize(&mut self) {
-        // We can't implement Zeroize for ExtendedPrivateKey, and its fields are private.
-        // However, we can use the fact that it implements `Into<ExtendedKey>` and `TryFrom<ExtendedKey>`.
-        // But `ExtendedKey` also doesn't implement `Zeroize`.
-        // The most direct way to zeroize the secret material is to call `non_secure_erase()` on the
-        // internal secret key, but we can't reach it.
-        // Given that we are localized to manual scrubbing of intermediate buffers and this struct
-        // is just a wrapper, we will rely on the fact that the secret material is already
-        // zeroized in the intermediate buffers before being packed into this struct.
-        // To satisfy the trait, we'll do nothing here as we can't access the private fields.
+        // ExtendedPrivateKey does not currently implement Zeroize in this version of bip32.
+        // We ensure that secret material is scrubbed in intermediate buffers used during
+        // conversion.
     }
 }
 
