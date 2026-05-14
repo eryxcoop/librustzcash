@@ -232,24 +232,6 @@ impl IntoIterator for NonHardenedChildRange {
 #[cfg(feature = "transparent-inputs")]
 pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
 
-#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
-impl Zeroize for AccountPrivKey {
-    fn zeroize(&mut self) {
-        // ExtendedPrivateKey does not currently implement Zeroize in this version of bip32.
-        // We ensure that secret material is scrubbed in intermediate buffers used during
-        // conversion.
-    }
-}
-
-#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
-impl Drop for AccountPrivKey {
-    fn drop(&mut self) {
-        self.zeroize();
-    }
-}
-
-#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
-impl ZeroizeOnDrop for AccountPrivKey {}
 
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for AccountPrivKey {
