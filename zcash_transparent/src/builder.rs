@@ -123,7 +123,6 @@ pub struct TransparentSigningSet {
     #[cfg(feature = "transparent-inputs")]
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
-
 #[cfg(feature = "zeroize")]
 impl zeroize::Zeroize for TransparentSigningSet {
     fn zeroize(&mut self) {
@@ -133,15 +132,12 @@ impl zeroize::Zeroize for TransparentSigningSet {
         }
     }
 }
-
 #[cfg(feature = "zeroize")]
 impl Drop for TransparentSigningSet {
     fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.zeroize();
+        zeroize::Zeroize::zeroize(self);
     }
 }
-
 #[cfg(feature = "zeroize")]
 impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
 
