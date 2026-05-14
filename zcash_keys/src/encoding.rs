@@ -266,7 +266,7 @@ pub fn decode_extended_full_viewing_key(
     hrp: &str,
     s: &str,
 ) -> Result<ExtendedFullViewingKey, Bech32DecodeError> {
-    bech32_decode(hrp, s, |data| ExtendedFullViewingKey::read(&data[..]).ok())
+    bech32_decode(hrp, s, |data| ExtendedFullViewingKey::read(data).ok())
 }
 
 /// Decodes an [`ExtendedFullViewingKey`] and the [`NetworkType`] that it is intended for use with
@@ -382,7 +382,7 @@ pub fn decode_payment_address(
         }
 
         let mut bytes = [0; 43];
-        bytes.copy_from_slice(&data);
+        bytes.copy_from_slice(data);
         sapling::PaymentAddress::from_bytes(&bytes)
     })
 }
