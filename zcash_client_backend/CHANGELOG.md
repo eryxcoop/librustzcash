@@ -12,8 +12,37 @@ workspace.
 
 ### Added
 - `zcash_client_backend::data_api::error::RewindError`
+- `zcash_client_backend::wallet::WalletTransparentOutput`:
+  - `recipient_account`
+  - `recipient_key_scope`
+  - `funding_account`
+- `zcash_client_backend::wallet::Recipient::InternalTransparent` (behind
+  the `transparent-inputs` feature flag): a new variant for recording the
+  send side of a transparent output whose recipient address belongs to a
+  wallet account (i.e., the wallet both funded and received the output).
+- `zcash_client_backend::TransferType::AccountInternal`: indicates an output
+  whose recipient and funder are the same wallet account (e.g. change). This
+  has the semantics previously carried by `TransferType::WalletInternal`.
+- `zcash_client_backend::data_api::wallet::propose_shielding_coinbase` and
+  `zcash_client_backend::data_api::wallet::input_selection::ShieldingSelector::propose_shielding_coinbase`,
+  which propose a transaction that shields one or more coinbase transparent
+  outputs to an arbitrary shielded recipient.
+- `zcash_client_backend::proposal::ProposalError::ShieldingRequiresShieldedRecipient`,
+  returned by `propose_shielding_coinbase` when the supplied `to_address` is
+  a transparent or TEX address.
+- `zcash_client_backend::data_api::wallet::ProposeShieldingCoinbaseErrT` type
+  alias, parallel to `ProposeShieldingErrT` but parameterized on a `FeeRule`
+  instead of a `ChangeStrategy`.
 
 ### Changed
+- `zcash_client_backend::data_api`:
+  - Changes to the `InputSource` trait:
+    - The result types of `InputSource::get_unspent_transparent_output` and
+      `InputSource::get_unspent_transparent_outputs` have each changed; these
+      have reverted to returning `WalletTransparentOutput`.
+- `zcash_client_backend::data_api::SentTransaction`: the `account_id` field
+  and accessor have been renamed to `funding_account`, to disambiguate from
+  the recipient-account terminology now used by `WalletTransparentOutput`.
 - `zcash_client_backend::data_api::WalletWrite`:
   - `rewind_to_height` has been replaced by `rewind_to_chain_state`. Callers
     that previously passed a `BlockHeight` should now construct a
@@ -23,6 +52,26 @@ workspace.
     fail with `RewindError::RewindBeyondBirthdays`; the caller should re-try
     with the affected account ids included in the `reset_account_birthdays`
     argument to acknowledge that those birthdays will be lowered.
+- `zcash_client_backend::proposal`:
+  - `Proposal::single_step` and `Step::from_parts` now take transparent inputs
+    as `Vec<WalletTransparentOutput<()>>` (explicitly with no account ID).
+- `zcash_client_backend::TransferType::WalletInternal` semantics have
+  narrowed: it now specifically indicates a cross-account internal transfer
+  (recipient and funder are distinct wallet accounts). Code that previously
+  used `WalletInternal` for same-account self-transfers should switch to the
+  new `AccountInternal` variant.
+- `zcash_client_backend::wallet::WalletTransparentOutput` has been refactored
+  to convey information equivalent to `WalletOutput`:
+    - It now has an `AccountId` generic parameter,
+    - `from_parts` now takes additional `recipient_account`,
+      `recipient_key_scope`, and `funding_account` parameters.
+- `zcash_client_backend::data_api::wallet::input_selection::ShieldingSelector`
+  now requires implementors to provide `propose_shielding_coinbase` in
+  addition to `propose_shielding`.
+
+### Removed
+- `zcash_client_backend::data_api::WalletUtxo` (use `WalletTransparentOutput` 
+  instead).
 
 ## [0.22.0] - 2026-04-27
 

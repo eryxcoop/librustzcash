@@ -1137,6 +1137,46 @@ where
         )
     }
 
+    /// Invokes [`propose_shielding_coinbase`] with the given arguments.
+    ///
+    /// [`propose_shielding_coinbase`]: crate::data_api::wallet::propose_shielding_coinbase
+    #[cfg(feature = "transparent-inputs")]
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
+    pub fn propose_shielding_coinbase<InputsT, FeeRuleT>(
+        &mut self,
+        input_selector: &InputsT,
+        fee_rule: &FeeRuleT,
+        shielding_threshold: Zatoshis,
+        from_addrs: &[TransparentAddress],
+        to_address: zcash_address::ZcashAddress,
+        memo: Option<zcash_protocol::memo::MemoBytes>,
+        limit: Option<usize>,
+    ) -> Result<
+        Proposal<FeeRuleT, Infallible>,
+        super::wallet::ProposeShieldingCoinbaseErrT<DbT, Infallible, InputsT, FeeRuleT>,
+    >
+    where
+        InputsT: ShieldingSelector<InputSource = DbT>,
+        FeeRuleT: zcash_primitives::transaction::fees::FeeRule + Clone,
+    {
+        use super::wallet::propose_shielding_coinbase;
+
+        let network = self.network().clone();
+        propose_shielding_coinbase::<_, _, _, _, Infallible>(
+            self.wallet_mut(),
+            &network,
+            input_selector,
+            fee_rule,
+            shielding_threshold,
+            from_addrs,
+            to_address,
+            memo,
+            limit,
+        )
+    }
+
     /// Invokes [`create_proposed_transactions`] with the given arguments.
     #[allow(clippy::type_complexity)]
     pub fn create_proposed_transactions<InputsErrT, FeeRuleT, ChangeErrT, N>(
@@ -3050,7 +3090,7 @@ impl WalletWrite for MockWalletDb {
     /// Adds a transparent UTXO received by the wallet to the data store.
     fn put_received_transparent_utxo(
         &mut self,
-        _output: &WalletTransparentOutput,
+        _output: &WalletTransparentOutput<Self::AccountId>,
     ) -> Result<Self::UtxoRef, Self::Error> {
         Ok(0)
     }
