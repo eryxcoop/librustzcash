@@ -348,3 +348,50 @@ New features and non-fix changes should branch from `main`.
 - `cargo-deny` license checking, `cargo-vet` supply chain audits — adding or
   bumping dependencies requires new audit entries, so dependency changes have
   a real review cost; avoid unnecessary dependency churn
+
+## Audit Context
+
+The repository now contains local audit notes under [`audits/`](audits/). Agents doing
+security work should check these first to avoid re-deriving the same context.
+
+### Important Trust Boundaries
+
+- `zcash_client_backend` compact scanning and decryption paths are **not** equivalent to
+  full transaction consensus validation. Decryption / compact scanning can drive wallet
+  state and spendability decisions without locally verifying proofs or signatures.
+- `decrypt_and_store_transaction` should be treated as a wallet recovery / attribution API,
+  not as a consensus validator.
+- `zcash_address` parsing is intentionally more structural than transaction-construction
+  code. Successful `ZcashAddress` parsing does **not** always imply that all embedded
+  receivers are semantically usable by downstream crates.
+
+### Known Hot Spots
+
+- Compact block parsing helpers in `zcash_client_backend::proto` contain convenience methods
+  that may panic on malformed lengths / ranges if used directly on untrusted protobuf data.
+- PCZT metadata (`user_address`, proprietary output info) is wallet-facing metadata and is
+  not the same thing as consensus-bound recipient data.
+- Sapling / Orchard note plaintext values are locally represented as raw `u64` note values;
+  wallet code must not assume they have already been reduced to the valid `Zatoshis` range
+  unless consensus validation has happened upstream.
+
+### Address / Key-Derivation Semantics
+
+- `UnifiedIncomingViewingKey::decrypt_diversifiers` is a **set-valued** query, not a proof of
+  unique ownership. A mixed or synthetic Unified Address may be attributable to multiple
+  diversifier indices or multiple accounts.
+- Wallet lookup code should preserve the current conservative behavior for mixed-account UAs:
+  if shielded receivers map to different wallet accounts, report conflict rather than picking
+  one.
+- Transparent receiver derivation intentionally only accepts diversifier indices whose upper
+  7 bytes are zero, because they map to 32-bit non-hardened child indices.
+
+### Halo2 / Orchard Notes
+
+- The only substantial Fiat-Shamir / evaluation-domain proving stack present here is the
+  Orchard Halo2 path. No Solidity verifier code is present in this repository.
+- The checked-in Orchard pinned verification-key description currently reports `k = 11`,
+  `extended_k = 14`, and `num_instance_columns = 1`.
+- For Halo2 `0.3.2`, the independently rechecked domain formulas matched the library code:
+  quotient degree is `degree - 1`, the extended domain grows until `2^extended_k >= 2^k * (degree - 1)`,
+  and minimum rows are `blinding_factors + 3`.

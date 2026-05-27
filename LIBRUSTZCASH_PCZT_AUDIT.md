@@ -867,3 +867,32 @@ because the signer-facing UI component is missing from this codebase.
 Can a wallet/history consumer store or display recipient A while the committed output pays B?
 
 **YES**
+
+## Addendum: later composed-wallet PoCs
+
+After the original PCZT-only pass, this branch grew beyond the initial
+recipient-mismatch demonstration. The following follow-on PoCs were later built
+on top of the same root cause family:
+
+- `extract_and_store_transaction_from_pczt_can_store_internal_account_classification_distinct_from_committed_external_sapling_output`
+- `extract_and_store_transaction_from_pczt_can_store_internal_account_classification_distinct_from_committed_external_orchard_output`
+- `zcash_client_memory::testing::pool::pczt_sent_history_can_be_misled_by_user_address_and_output_metadata`
+- `zcash_client_memory::testing::pool::pczt_sent_history_can_reclassify_external_output_as_internal_account`
+- `zcash_client_memory::testing::pool::pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output`
+- `zcash_client_memory::testing::pool::local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification`
+
+Those follow-on PoCs matter because they show that the original “committed
+recipient `B` vs displayed recipient `A`” mismatch is not confined to one
+backend extraction step. It can also:
+
+- reclassify an actually external output as wallet-internal,
+- contaminate sent-history and transaction-summary surfaces,
+- and compose with the separate ZIP-212 / missing-chain-context trust-boundary
+  issue to produce a stronger local wallet-state corruption story.
+
+So the best current reading of the PCZT findings in this branch is:
+
+- the base bug is still “wallet-bound metadata trusted after signing”;
+- the strongest demonstrated impact is no longer only wrong displayed recipient;
+- it now includes broader wallet-history and wallet-intent corruption when the
+  mutated PCZT output is stored and later reinterpreted by wallet APIs.

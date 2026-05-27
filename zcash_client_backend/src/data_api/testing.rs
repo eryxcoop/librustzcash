@@ -35,7 +35,7 @@ use zcash_primitives::{
 };
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    ShieldedProtocol,
+    PoolType, ShieldedProtocol,
     consensus::{self, BlockHeight, Network, NetworkUpgrade, Parameters as _},
     local_consensus::LocalNetwork,
     memo::{Memo, MemoBytes},
@@ -65,6 +65,7 @@ use crate::{
     data_api::{
         MaxSpendMode, OutputOfSentTx, TargetValue, error::RewindError, wallet::TargetHeight,
     },
+    decrypt::TransferType,
     fees::{
         ChangeStrategy, DustOutputPolicy, StandardFeeRule,
         standard::{self, SingleOutputChangeStrategy},
@@ -553,6 +554,16 @@ where
             compact_block.height(),
             prev_block.roll_forward(&compact_block),
         );
+        self.cache.insert(&compact_block)
+    }
+
+    /// Inserts a [`CompactBlock`] directly into the backing block cache without updating
+    /// the test harness's cached chain-state metadata.
+    ///
+    /// This is intended for malformed-input tests that need the block source to surface
+    /// bytes that would be rejected or panic if the harness tried to derive commitment-tree
+    /// metadata from them first.
+    pub fn inject_compact_block(&mut self, compact_block: CompactBlock) -> Cache::InsertResult {
         self.cache.insert(&compact_block)
     }
 
@@ -1137,46 +1148,6 @@ where
         )
     }
 
-    /// Invokes [`propose_shielding_coinbase`] with the given arguments.
-    ///
-    /// [`propose_shielding_coinbase`]: crate::data_api::wallet::propose_shielding_coinbase
-    #[cfg(feature = "transparent-inputs")]
-    #[allow(clippy::type_complexity)]
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    pub fn propose_shielding_coinbase<InputsT, FeeRuleT>(
-        &mut self,
-        input_selector: &InputsT,
-        fee_rule: &FeeRuleT,
-        shielding_threshold: Zatoshis,
-        from_addrs: &[TransparentAddress],
-        to_address: zcash_address::ZcashAddress,
-        memo: Option<zcash_protocol::memo::MemoBytes>,
-        limit: Option<usize>,
-    ) -> Result<
-        Proposal<FeeRuleT, Infallible>,
-        super::wallet::ProposeShieldingCoinbaseErrT<DbT, Infallible, InputsT, FeeRuleT>,
-    >
-    where
-        InputsT: ShieldingSelector<InputSource = DbT>,
-        FeeRuleT: zcash_primitives::transaction::fees::FeeRule + Clone,
-    {
-        use super::wallet::propose_shielding_coinbase;
-
-        let network = self.network().clone();
-        propose_shielding_coinbase::<_, _, _, _, Infallible>(
-            self.wallet_mut(),
-            &network,
-            input_selector,
-            fee_rule,
-            shielding_threshold,
-            from_addrs,
-            to_address,
-            memo,
-            limit,
-        )
-    }
-
     /// Invokes [`create_proposed_transactions`] with the given arguments.
     #[allow(clippy::type_complexity)]
     pub fn create_proposed_transactions<InputsErrT, FeeRuleT, ChangeErrT, N>(
@@ -1580,6 +1551,19 @@ impl<A> TestBuilder<A, ()> {
 }
 
 impl<A, B> TestBuilder<A, B> {
+    /// Overrides the network used by the test builder.
+    ///
+    /// # Panics
+    ///
+    /// - Must be called before [`Self::with_initial_chain_state`].
+    /// - Must be called before configuring an account birthday.
+    pub fn with_network(mut self, network: LocalNetwork) -> Self {
+        assert!(self.initial_chain_state.is_none());
+        assert!(self.account_birthday.is_none());
+        self.network = network;
+        self
+    }
+
     #[cfg(feature = "transparent-inputs")]
     pub fn with_gap_limits(self, gap_limits: GapLimits) -> TestBuilder<A, B> {
         TestBuilder {
@@ -2606,9 +2590,39 @@ impl NoteCommitments {
 }
 
 /// A mock wallet data source that implements the bare minimum necessary to function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordedDecryptedTxSummary {
+    pub txid: TxId,
+    pub sapling_output_values: Vec<Zatoshis>,
+    pub sapling_transfer_types: Vec<TransferType>,
+    #[cfg(feature = "orchard")]
+    pub orchard_output_values: Vec<Zatoshis>,
+    #[cfg(feature = "orchard")]
+    pub orchard_transfer_types: Vec<TransferType>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StoredSentRecipientSummary {
+    External {
+        recipient_address: ZcashAddress,
+        output_pool: PoolType,
+    },
+    #[cfg(feature = "transparent-inputs")]
+    EphemeralTransparent {
+        receiving_account: u32,
+        ephemeral_address: ::transparent::address::TransparentAddress,
+    },
+    InternalAccount {
+        receiving_account: u32,
+        external_address: Option<ZcashAddress>,
+    },
+}
+
 pub struct MockWalletDb {
     pub network: Network,
     pub sent_outputs_by_tx: HashMap<TxId, Vec<OutputOfSentTx>>,
+    pub stored_sent_recipients_by_tx: HashMap<TxId, Vec<StoredSentRecipientSummary>>,
+    pub last_decrypted_tx: Option<RecordedDecryptedTxSummary>,
     pub sapling_tree: ShardTree<
         MemoryShardStore<::sapling::Node, BlockHeight>,
         { SAPLING_SHARD_HEIGHT * 2 },
@@ -2620,6 +2634,7 @@ pub struct MockWalletDb {
         { ORCHARD_SHARD_HEIGHT * 2 },
         ORCHARD_SHARD_HEIGHT,
     >,
+    chain_height: Option<BlockHeight>,
     account_ids: Vec<u32>,
     addresses_by_account: HashMap<u32, Vec<AddressInfo>>,
     ufvks_by_account: HashMap<u32, UnifiedFullViewingKey>,
@@ -2631,9 +2646,12 @@ impl MockWalletDb {
         Self {
             network,
             sent_outputs_by_tx: HashMap::new(),
+            stored_sent_recipients_by_tx: HashMap::new(),
+            last_decrypted_tx: None,
             sapling_tree: ShardTree::new(MemoryShardStore::empty(), 100),
             #[cfg(feature = "orchard")]
             orchard_tree: ShardTree::new(MemoryShardStore::empty(), 100),
+            chain_height: None,
             account_ids: vec![],
             addresses_by_account: HashMap::new(),
             ufvks_by_account: HashMap::new(),
@@ -2666,6 +2684,12 @@ impl MockWalletDb {
         }
         wallet.account_ids.sort_unstable();
         wallet
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_chain_height(mut self, chain_height: Option<BlockHeight>) -> Self {
+        self.chain_height = chain_height;
+        self
     }
 }
 
@@ -2807,7 +2831,7 @@ impl WalletRead for MockWalletDb {
     }
 
     fn chain_height(&self) -> Result<Option<BlockHeight>, Self::Error> {
-        Ok(None)
+        Ok(self.chain_height)
     }
 
     fn get_block_hash(&self, _block_height: BlockHeight) -> Result<Option<BlockHash>, Self::Error> {
@@ -2848,7 +2872,7 @@ impl WalletRead for MockWalletDb {
     fn get_unified_full_viewing_keys(
         &self,
     ) -> Result<HashMap<Self::AccountId, UnifiedFullViewingKey>, Self::Error> {
-        Ok(HashMap::new())
+        Ok(self.ufvks_by_account.clone())
     }
 
     fn get_memo(&self, _id_note: NoteId) -> Result<Option<Memo>, Self::Error> {
@@ -3014,8 +3038,33 @@ impl WalletWrite for MockWalletDb {
 
     fn store_decrypted_tx(
         &mut self,
-        _received_tx: DecryptedTransaction<Transaction, Self::AccountId>,
+        received_tx: DecryptedTransaction<Transaction, Self::AccountId>,
     ) -> Result<(), Self::Error> {
+        self.last_decrypted_tx = Some(RecordedDecryptedTxSummary {
+            txid: received_tx.tx().txid(),
+            sapling_output_values: received_tx
+                .sapling_outputs()
+                .iter()
+                .map(|output| output.note_value())
+                .collect(),
+            sapling_transfer_types: received_tx
+                .sapling_outputs()
+                .iter()
+                .map(|output| output.transfer_type())
+                .collect(),
+            #[cfg(feature = "orchard")]
+            orchard_output_values: received_tx
+                .orchard_outputs()
+                .iter()
+                .map(|output| output.note_value())
+                .collect(),
+            #[cfg(feature = "orchard")]
+            orchard_transfer_types: received_tx
+                .orchard_outputs()
+                .iter()
+                .map(|output| output.transfer_type())
+                .collect(),
+        });
         Ok(())
     }
 
@@ -3028,6 +3077,45 @@ impl WalletWrite for MockWalletDb {
         transactions: &[SentTransaction<Self::AccountId>],
     ) -> Result<(), Self::Error> {
         for tx in transactions {
+            let stored_recipients = tx
+                .outputs()
+                .iter()
+                .map(|output| match output.recipient() {
+                    Recipient::External {
+                        recipient_address,
+                        output_pool,
+                    } => StoredSentRecipientSummary::External {
+                        recipient_address: recipient_address.clone(),
+                        output_pool: *output_pool,
+                    },
+                    #[cfg(feature = "transparent-inputs")]
+                    Recipient::EphemeralTransparent {
+                        receiving_account,
+                        ephemeral_address,
+                        ..
+                    } => StoredSentRecipientSummary::EphemeralTransparent {
+                        receiving_account: *receiving_account,
+                        ephemeral_address: *ephemeral_address,
+                    },
+                    Recipient::InternalAccount {
+                        receiving_account,
+                        external_address,
+                        ..
+                    } => StoredSentRecipientSummary::InternalAccount {
+                        receiving_account: *receiving_account,
+                        external_address: external_address.clone(),
+                    },
+                    #[cfg(feature = "transparent-inputs")]
+                    Recipient::InternalTransparent { .. } => {
+                        StoredSentRecipientSummary::InternalAccount {
+                            receiving_account: 0,
+                            external_address: None,
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            self.stored_sent_recipients_by_tx
+                .insert(tx.tx().txid(), stored_recipients);
             let outputs = tx
                 .outputs()
                 .iter()
@@ -3053,6 +3141,10 @@ impl WalletWrite for MockWalletDb {
                             )
                             .ok()
                         }),
+                        #[cfg(feature = "transparent-inputs")]
+                        Recipient::InternalTransparent {
+                            recipient_address, ..
+                        } => Some((*recipient_address).into()),
                     };
 
                     OutputOfSentTx::from_parts(

@@ -230,3 +230,53 @@ pub(crate) fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTes
         _,
     >(TestMemDbFactory::new(), MemBlockCache::new())
 }
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_be_misled_by_user_address_and_output_metadata<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_be_misled_by_user_address_and_output_metadata::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_reclassify_external_output_as_internal_account<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_reclassify_external_output_as_internal_account::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan::<
+        T,
+        _,
+    >(TestMemDbFactory::new(), MemBlockCache::new())
+}
