@@ -3,9 +3,9 @@
 use core::fmt;
 
 use bip32::ChildNumber;
+use subtle::{Choice, ConstantTimeEq};
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use subtle::{Choice, ConstantTimeEq};
 use zip32::DiversifierIndex;
 
 #[cfg(feature = "transparent-inputs")]
@@ -426,6 +426,7 @@ impl AccountPubKey {
     ///
     /// [transparent-ovk]: https://zips.z.cash/zip-0316#deriving-internal-keys
     pub fn ovks_for_shielding(&self) -> (InternalOvk, ExternalOvk) {
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
             .with(&self.0.attrs().chain_code, &self.0.public_key().serialize());
         let ovk_external = ExternalOvk(i_ovk[..32].try_into().unwrap());
