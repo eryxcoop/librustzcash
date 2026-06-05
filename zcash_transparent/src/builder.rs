@@ -124,6 +124,26 @@ pub struct TransparentSigningSet {
     keys: Vec<(secp256k1::SecretKey, secp256k1::PublicKey)>,
 }
 
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl zeroize::Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        for (sk, _) in self.keys.iter_mut() {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl Drop for TransparentSigningSet {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
+
 impl Default for TransparentSigningSet {
     fn default() -> Self {
         Self::new()
@@ -1201,5 +1221,18 @@ mod tests {
 
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(matches!(result, Err(Error::MissingSigningKey)));
+    }
+}
+
+#[cfg(test)]
+mod zeroize_tests {
+    #[test]
+    #[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+    fn test_signing_set_zeroize() {
+        use zeroize::Zeroize;
+        let mut set = super::TransparentSigningSet::new();
+        let sk = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
+        set.add_key(sk);
+        set.zeroize();
     }
 }
