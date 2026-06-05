@@ -899,9 +899,11 @@ mod tests {
         assert_eq!(format!("{:?}", internal_ovk), "InternalOvk(\"...\")");
         assert_eq!(format!("{:?}", external_ovk), "ExternalOvk(\"...\")");
     }
+}
 
+#[cfg(test)]
+mod zeroize_tests {
     #[test]
-    #[cfg(feature = "zeroize")]
     fn test_ovk_zeroize() {
         use zeroize::Zeroize;
         let mut internal = super::InternalOvk([1u8; 32]);

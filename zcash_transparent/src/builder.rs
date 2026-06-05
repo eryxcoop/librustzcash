@@ -1222,7 +1222,10 @@ mod tests {
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(matches!(result, Err(Error::MissingSigningKey)));
     }
+}
 
+#[cfg(test)]
+mod zeroize_tests {
     #[test]
     #[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
     fn test_signing_set_zeroize() {
