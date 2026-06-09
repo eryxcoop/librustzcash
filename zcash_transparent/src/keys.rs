@@ -1,8 +1,7 @@
 //! Transparent key components.
 
-use core::fmt;
-
 use bip32::ChildNumber;
+use core::fmt;
 use subtle::{Choice, ConstantTimeEq};
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};

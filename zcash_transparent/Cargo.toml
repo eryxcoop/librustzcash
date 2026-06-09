@@ -62,7 +62,7 @@ hex.workspace = true
 
 # - Transparent protocol
 ripemd.workspace = true
-zeroize = { workspace = true, optional = true, features = ["derive"] }
+zeroize = { workspace = true, optional = true, features = ["alloc", "derive"] }
 
 [dev-dependencies]
 proptest.workspace = true
