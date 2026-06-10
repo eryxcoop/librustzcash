@@ -2,7 +2,7 @@
 
 Hi, I would like to privately disclose a security issue affecting `librustzcash`, with downstream impact also demonstrated in `Zallet`.
 
-At a high level, this is not just one isolated bug. It is a composed wallet-side issue involving:
+At a high level, this involves a composed wallet-side problem including:
 
 - incorrect trust in wallet-bound metadata after signing / extraction;
 - wallet-visible misclassification of outputs and recipient intent;
@@ -16,7 +16,7 @@ I have working PoCs and test coverage for the relevant paths in:
 - `zcash_client_sqlite`
 - and a real `Zallet` integration path
 
-The currently demonstrated impact is local wallet state corruption / misattribution, inconsistent sent-history or recipient intent, and a reproducible wallet crash / freeze scenario under malicious sync input. I would prefer not to assign a severity in this first message and leave that to your review once you have the full technical details.
+The currently demonstrated impact is local wallet state corruption / misattribution, inconsistent sent-history or recipient intent, and a reproducible wallet crash / freeze scenario under malicious sync input.
 
 I can share a writeup, the exact tests, and reproduction steps privately right away.
 

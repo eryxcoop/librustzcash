@@ -6868,6 +6868,7 @@ pub fn local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_p
         nu5: Some(BlockHeight::from_u32(1)),
         nu6: None,
         nu6_1: None,
+        nu6_2: None,
         #[cfg(zcash_unstable = "nu7")]
         nu7: None,
         #[cfg(zcash_unstable = "zfuture")]
@@ -7249,6 +7250,7 @@ pub fn local_wallet_composed_state_can_panic_on_malformed_compact_block_during_f
         nu5: Some(BlockHeight::from_u32(1)),
         nu6: None,
         nu6_1: None,
+        nu6_2: None,
         #[cfg(zcash_unstable = "nu7")]
         nu7: None,
         #[cfg(zcash_unstable = "zfuture")]
