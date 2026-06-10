@@ -303,6 +303,7 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
 
         // Now decode it and return the bytes we want.
@@ -327,8 +328,10 @@ impl AccountPrivKey {
     /// 4 prefix bytes.
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
         // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
 
         #[cfg(feature = "zeroize")]
@@ -444,6 +447,7 @@ impl AccountPubKey {
     ///
     /// [transparent-ovk]: https://zips.z.cash/zip-0316#deriving-internal-keys
     pub fn ovks_for_shielding(&self) -> (InternalOvk, ExternalOvk) {
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
             .with(&self.0.attrs().chain_code, &self.0.public_key().serialize());
         let ovk_external = ExternalOvk(i_ovk[..32].try_into().unwrap());
