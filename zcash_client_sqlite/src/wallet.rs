@@ -4774,8 +4774,8 @@ pub(crate) fn put_sent_output<P: consensus::Parameters>(
             :to_address, :to_account_id, :value, :memo)
         ON CONFLICT (transaction_id, output_pool, output_index) DO UPDATE
         SET from_account_id = :from_account_id,
-            to_address = IFNULL(to_address, :to_address),
-            to_account_id = IFNULL(to_account_id, :to_account_id),
+            to_address = :to_address,
+            to_account_id = :to_account_id,
             value = :value,
             memo = IFNULL(:memo, memo)",
     )?;

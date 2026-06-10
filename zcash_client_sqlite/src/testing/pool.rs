@@ -6,10 +6,13 @@ use crate::{
     SAPLING_TABLES_PREFIX,
     testing::{BlockCache, db::TestDbFactory},
 };
+use zcash_client_backend::data_api::WalletWrite;
 use zcash_client_backend::data_api::testing::{
+    DataStoreFactory,
     pool::{InputTrust, ShieldedPoolTester},
     sapling::SaplingPoolTester,
 };
+use zcash_protocol::consensus::{NetworkUpgrade, Parameters as _};
 
 #[cfg(feature = "orchard")]
 use {
@@ -28,6 +31,40 @@ impl ShieldedPoolPersistence for SaplingPoolTester {
 #[cfg(feature = "orchard")]
 impl ShieldedPoolPersistence for OrchardPoolTester {
     const TABLES_PREFIX: &'static str = ORCHARD_TABLES_PREFIX;
+}
+
+#[cfg(feature = "pczt-tests")]
+struct TestDbFactoryWithInitialChainTip;
+
+#[cfg(feature = "pczt-tests")]
+impl DataStoreFactory for TestDbFactoryWithInitialChainTip {
+    type Error = <TestDbFactory as DataStoreFactory>::Error;
+    type AccountId = <TestDbFactory as DataStoreFactory>::AccountId;
+    type Account = <TestDbFactory as DataStoreFactory>::Account;
+    type DsError = <TestDbFactory as DataStoreFactory>::DsError;
+    type DataStore = <TestDbFactory as DataStoreFactory>::DataStore;
+
+    fn new_data_store(
+        &self,
+        network: zcash_protocol::local_consensus::LocalNetwork,
+        #[cfg(feature = "transparent-inputs")] gap_limits: Option<
+            zcash_keys::keys::transparent::gap_limits::GapLimits,
+        >,
+    ) -> Result<Self::DataStore, Self::Error> {
+        let mut ds = TestDbFactory::default().new_data_store(
+            network,
+            #[cfg(feature = "transparent-inputs")]
+            gap_limits,
+        )?;
+
+        let initial_tip = network
+            .activation_height(NetworkUpgrade::Sapling)
+            .expect("test local network has a Sapling activation height");
+        ds.update_chain_tip(initial_tip)
+            .expect("sqlite test data store should accept an initial chain tip");
+
+        Ok(ds)
+    }
 }
 
 pub(crate) fn send_single_step_proposed_transfer<T: ShieldedPoolTester>() {
@@ -419,6 +456,14 @@ pub(crate) fn pczt_single_step<P0: ShieldedPoolTester, P1: ShieldedPoolTester>()
     )
 }
 
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTester>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_be_misled_by_user_address::<
+        T,
+        _,
+    >(TestDbFactory::default(), BlockCache::new())
+}
+
 #[cfg(feature = "transparent-inputs")]
 pub(crate) fn wallet_recovery_computes_fees<T: ShieldedPoolTester>() {
     use rusqlite::named_params;
@@ -459,6 +504,56 @@ pub(crate) fn receive_two_notes_with_same_value<T: ShieldedPoolTester>() {
         TestDbFactory::default(),
         BlockCache::new(),
     )
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_be_misled_by_user_address_and_output_metadata<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_be_misled_by_user_address_and_output_metadata::<
+        T,
+        _,
+    >(TestDbFactory::default(), BlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_sent_history_can_reclassify_external_output_as_internal_account<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_sent_history_can_reclassify_external_output_as_internal_account::<
+        T,
+        _,
+    >(TestDbFactory::default(), BlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output::<
+        T,
+        _,
+    >(TestDbFactory::default(), BlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification::<
+        T,
+        _,
+    >(TestDbFactoryWithInitialChainTip, BlockCache::new())
+}
+
+#[cfg(feature = "pczt-tests")]
+pub(crate) fn local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan<
+    T: ShieldedPoolTester,
+>() {
+    zcash_client_backend::data_api::testing::pool::local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan::<
+        T,
+        _,
+    >(TestDbFactoryWithInitialChainTip, BlockCache::new())
 }
 
 #[cfg(all(feature = "pczt-tests", feature = "transparent-inputs"))]

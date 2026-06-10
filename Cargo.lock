@@ -7159,6 +7159,7 @@ dependencies = [
  "proptest",
  "prost",
  "prost-build",
+ "rand_core 0.6.4",
  "rayon",
  "sapling-crypto",
  "secp256k1",

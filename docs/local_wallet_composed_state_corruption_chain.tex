@@ -1,0 +1,707 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{amsmath}
+
+\geometry{margin=2.5cm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    pdftitle={Ataque compuesto sobre wallet local en librustzcash},
+    pdfauthor={Codex}
+}
+
+\lstdefinestyle{plain}{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+
+\title{Analisis tecnico del ataque compuesto sobre wallet local}
+\author{Documento interno de auditoria tecnica}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Resumen ejecutivo}
+
+Este documento reemplaza el informe anterior centrado en un solo bug de PCZT.
+La tesis actual es mas ambiciosa:
+
+\begin{quote}
+No estamos frente a un unico bug aislado, sino frente a una cadena de bugs
+wallet-side que se pueden combinar para producir un impacto local mayor:
+historial falso, recipient intent falso, estado spendable corrupto,
+persistencia de metadata no revalidada, fallos tardios al gastar y
+denegacion de servicio durante recovery / scan / rescan.
+\end{quote}
+
+La conclusion central es:
+
+\paragraph{Lo que no afirmamos.}
+No confirmamos robo directo de fondos on-chain ni bypass de consenso.
+
+\paragraph{Lo que si afirmamos.}
+Si confirmamos una cadena plausible y fuerte de \textbf{corrupcion de estado
+de wallet local}.
+
+El ataque compuesto mas fuerte que hoy podemos sostener tecnicamente es:
+
+primero, el wallet acepta o procesa datos shielded no plenamente validados;
+despues, persiste campos de nota y metadata auxiliar sin rebindearlos
+suficientemente al commitment y al output real; mas adelante, en flujos PCZT,
+sigue confiando en metadata mutable para recipient, cuenta, valor y direccion
+visible; luego, tras un deep rewind, puede preservar parte de ese estado
+criptografico inconsistente; y finalmente varias ramas permiten panic antes de
+que una correccion por rescan o reprocesamiento limpie el estado.
+
+Eso lleva a un impacto agregado tipo:
+
+sent history falso, received history semantica o estructuralmente
+inconsistente, memo u output index mal asociados, spendability local
+incorrecta, witness o nullifier state persistiendo mas de lo debido, fallos
+tardios al construir spends y DoS operacional.
+
+\section{Objetivo del documento}
+
+Este documento persigue cuatro metas. Primero, describir el
+\textbf{ataque compuesto} que queremos demostrar con PoC. Segundo, explicar
+\textbf{muy detalladamente} los bugs chicos que lo habilitan. Tercero, dejar
+claro cuales partes son \textbf{hallazgos confirmados} y cuales son
+\textbf{composicion / amplificacion}. Cuarto, fijar el
+\textbf{plan de implementacion de PoC} en la misma forma usada en la branch
+anterior: como tests en \texttt{zcash\_client\_backend},
+\texttt{zcash\_client\_memory} y, para las rutas wallet-side relevantes,
+tambien en \texttt{zcash\_client\_sqlite}.
+
+\section{Estado actual de PoC}
+
+La cadena compuesta ya no es solo un diseno teorico. En esta branch quedaron
+PoC ejecutables para dos rutas ya demostradas. La primera es la
+\textbf{corrupcion de intent en PCZT}: hay tests backend para Sapling y
+Orchard, tests sobre \texttt{zcash\_client\_memory} y ahora tambien tests
+sobre \texttt{zcash\_client\_sqlite} que muestran que la sent history puede
+persistir un recipient falso o reutilizar una reclasificacion falsa de output
+externo como estado wallet-interno. La segunda es el
+\textbf{mismatch de contexto ZIP-212}: hay un test backend que demuestra que la
+misma transaccion puede ser tratada como wallet-owned o no segun el contexto
+de cadena que se pase a \texttt{decrypt\_transaction}; y esa misma
+superficie wallet-visible ya quedo revalidada tambien en
+\texttt{zcash\_client\_sqlite} para la ruta de sent history.
+
+En otras palabras, hoy ya tenemos demostradas por tests la ruta
+``PCZT mutable $\rightarrow$ historial falso'', la ruta
+``PCZT mutable $\rightarrow$ reclasificacion de output externo como
+\texttt{InternalAccount}'', la ruta
+``reclasificacion falsa $\rightarrow$ resumen historico reutiliza esa
+semantica interna'', la ruta
+``contexto legacy $\rightarrow$ aceptacion wallet-side bajo semantica
+equivocada'' y la ruta
+``contexto legacy $\rightarrow$ sent history visible'' tanto para el wallet
+in-memory como para \texttt{zcash\_client\_sqlite} cuando la transaccion se
+interpreta como \textit{outgoing} bajo el contexto equivocado.
+
+Ademas, esta branch ya contiene una \textbf{PoC compuesta sobre el mismo
+wallet} que une ambas familias en una sola historia operativa. Primero, el
+wallet acepta una transaccion Sapling legacy por falta de contexto de cadena y
+la expone por \texttt{get\_sent\_outputs()}. Despues, en ese mismo wallet, una
+segunda transaccion creada por el flujo
+proposal $\rightarrow$ PCZT $\rightarrow$ prove $\rightarrow$ sign
+$\rightarrow$ extract queda reclasificada como \texttt{InternalAccount}
+aunque el output comprometido siga siendo externamente recoverable. Finalmente,
+el mismo wallet queda en un estado donde la tx legacy sigue mostrando
+recipient externo por \texttt{get\_sent\_outputs()}, mientras que la tx PCZT
+ya no muestra ningun recipient externo por esa misma API.
+
+El efecto compuesto mas fuerte que hoy ya esta demostrado por test es que,
+cuando ambas corrupciones coexisten en el mismo wallet, \texttt{get\_tx\_history()}
+deja de producir una vista global consistente y falla identificando la
+transaccion legacy admitida por el path sin contexto.
+
+Esa ya no es la ultima etapa demostrada. Hoy la branch tambien contiene una
+\textbf{variante ejecutable de escalada a High}: se toma ese mismo wallet ya
+corrompido por las dos familias previas, se lo deja en un estado todavia
+suficientemente vivo como para seguir escaneando y luego un unico bloque
+compacto malformado en la siguiente altura hace panicar el
+\texttt{scan\_cached\_blocks()} normal.
+
+En la variante actual, el campo malformado elegido es \texttt{prev\_hash} con
+longitud invalida, de modo que el panic aparece durante la verificacion de
+continuidad de bloques en el scanner y no por un hook artificial del test.
+
+La parte que \textbf{todavia no} esta ejecutable en
+\texttt{zcash\_client\_memory} es la amplificacion por reorg profundo, porque
+ese target todavia no implementa \texttt{rewind\_to\_chain\_state}.
+
+\subsection{Estado de integracion en Zallet}
+
+La PoC ya no vive solamente dentro de \texttt{librustzcash}. Tambien quedo
+integrada en el repo de \texttt{Zallet} en dos niveles.
+
+\paragraph{Variante white-box.}
+La primera variante es \textbf{white-box fuerte} sobre el engine de sync de
+Zallet. Ejerce \texttt{initialize} y el loop real de \texttt{steady\_state}
+sobre un \texttt{MockChain} y demuestra panic cuando el siguiente bloque
+malformado entra por la ruta normal de sync.
+
+\paragraph{Variante black-box.}
+La segunda es una \textbf{black-box de producto} que ejecuta
+\texttt{zallet start} contra un validator RPC stub minimo y demuestra que el
+proceso termina de manera fallida por input malicioso proveniente del origen
+normal de datos de cadena.
+
+Hay una diferencia tecnica importante entre ambas. La variante white-box sobre
+el loop de sync conserva la idea del \texttt{CompactBlock} malformado. La
+variante black-box por subprocess no usa el mismo \texttt{prev\_hash}
+truncado, porque en la ruta
+\texttt{FetchService -> BlockCache -> CompactBlock} Zaino reconstruye ese
+campo desde el bloque crudo. Por eso, en \texttt{zallet start}, la superficie
+efectiva elegida fue \texttt{z\_getsubtreesbyindex}: Zallet hace
+\texttt{unwrap()} sobre roots devueltos por el validator durante
+\texttt{initialize}, y un root malformado produce el crash de producto.
+
+Este punto es importante para disclosure: la composicion exacta del bug puede
+variar entre capas, pero el mensaje operativo sigue siendo el mismo:
+\textbf{un wallet local real puede caerse por input malicioso proveniente de su
+fuente normal de sync}.
+
+La integracion en Zallet ya subio un paso mas: no solo se confirmo un crash de
+producto aislado, sino tambien \textbf{persistencia del fallo tras restart}.
+Hoy ya hay una PoC donde:
+
+\begin{enumerate}[leftmargin=2em]
+    \item se inicializa una wallet real;
+    \item se la hace arrancar contra el mismo validator RPC stub malicioso;
+    \item \texttt{zallet start} falla;
+    \item sin reparar nada en disco ni cambiar de backend, se vuelve a correr
+    \texttt{zallet start};
+    \item y la wallet vuelve a fallar por la misma condicion.
+\end{enumerate}
+
+Eso no prueba robo ni consenso, pero si refuerza mucho el framing de
+\textit{freezing} operacional: el usuario no enfrenta un crash accidental
+unico, sino un estado donde la wallet no puede progresar autonomamente mientras
+persista la misma fuente de sync maliciosa.
+
+Ademas, la integracion de Zallet ya mejoro en dos direcciones adicionales que
+suben la calidad probatoria del impacto. Por un lado, ya existe una variante
+white-box donde el wallet tiene balance transparente visible por
+\texttt{WalletSummary} antes de entrar en el crash del loop de
+\texttt{steady\_state}. Por otro lado, ya existe una variante separada donde
+la tarea real de \texttt{recover\_history} paniquea al procesar bloques
+historicos malformados, en vez de depender del arranque o del steady-state
+loop.
+
+Eso fortalece dos partes distintas del argumento:
+
+\begin{enumerate}[leftmargin=2em]
+    \item que el crash puede afectar una wallet que ya tiene estado economico
+    visible y no solo una wallet ``vacia'';
+    \item que el mismo defecto no solo rompe el sync normal, sino tambien una
+    ruta de recuperacion que el usuario razonablemente intentaria usar para
+    volver a un estado sano.
+\end{enumerate}
+
+Es importante describir con precision el alcance actual de estas dos mejoras:
+
+\begin{itemize}[leftmargin=2em]
+    \item el caso de \textbf{balance visible antes del crash} ya esta probado
+    en una variante white-box del loop real de \texttt{steady\_state}, y ademas
+    ya existe una variante black-box donde \texttt{zallet start} falla contra
+    el validator malicioso despues de que el \texttt{wallet.db} fue presembrado
+    con un UTXO wallet-owned reconocido;
+    \item el caso de \textbf{crash en recovery historico} ya esta probado en
+    una variante white-box de la tarea real de \texttt{recover\_history}, y
+    ademas ya existe una variante black-box por subprocess donde
+    \texttt{zallet start} termina prematuramente al entrar por una historia
+    historica real servida por un validator malicioso;
+    \item la variante black-box por subprocess de \texttt{zallet start} hoy
+    sigue demostrando la caida de producto y la persistencia tras restart;
+    de las dos propiedades adicionales, ahora ya incorpora tanto la de estado
+    wallet-owned previo al crash como la de historia historica real. Lo que
+    cambia entre variantes es \textbf{como} se manifiesta el fallo.
+\end{itemize}
+
+En otras palabras, la evidencia actual ya demuestra las tres cosas fuertes por
+separado:
+
+\begin{enumerate}[leftmargin=2em]
+    \item crash o terminacion prematura de producto;
+    \item persistencia del fallo tras restart;
+    \item impacto sobre wallet con estado economico visible;
+    \item impacto sobre recovery historico.
+\end{enumerate}
+
+Lo que todavia queda como mejora opcional, y no como condicion para sostener el
+reporte, seria reunir todas esas propiedades dentro de una unica PoC black-box
+de producto con una semantica de fallo uniforme. Hoy la variante historica por
+subprocess ya existe, pero se observa como terminacion prematura de
+\texttt{zallet start} porque el supervisor actual descarta el
+\texttt{Result} de las tareas de sync y apaga el proceso en cuanto alguna de
+ellas termina.
+
+Ese paso de unificacion tambien quedo alcanzado. Hoy ya existe una variante
+black-box de producto donde, dentro del mismo escenario general:
+
+\begin{enumerate}[leftmargin=2em]
+    \item la wallet ya tiene estado wallet-owned visible en disco;
+    \item el trabajo pendiente real cae en historia historica;
+    \item el validator malicioso provoca la terminacion de
+    \texttt{zallet start};
+    \item un segundo \texttt{zallet start} vuelve a terminar de manera
+    prematura bajo la misma fuente maliciosa;
+    \item e incluso una reparacion local agresiva del estado wallet no evita la
+    terminacion mientras persista el mismo backend.
+\end{enumerate}
+
+Con eso, las propiedades que antes estaban demostradas por piezas quedaron ya
+demostradas tambien en una PoC black-box unificada:
+
+\begin{itemize}[leftmargin=2em]
+    \item estado wallet-owned visible;
+    \item historia historica real;
+    \item terminacion de producto;
+    \item persistencia tras restart;
+    \item freezing practico frente a reinicios y frente a una reparacion local
+    del estado.
+\end{itemize}
+
+La unica reserva que sigue siendo importante es semantica:
+\textbf{la variante historica por subprocess se manifiesta como terminacion
+prematura del proceso, no necesariamente como exit code no-cero}, porque el
+supervisor actual trata la salida de una tarea ongoing como condicion de
+apagado aunque el error no se propague como codigo de salida.
+
+Pero desde el punto de vista del impacto operacional sobre el usuario, esa
+reserva ya no cambia demasiado la lectura: la wallet queda en una condicion de
+\textit{freezing} practico mientras siga dependiendo de la misma fuente de sync
+maliciosa.
+
+\section{Fuentes usadas dentro de esta branch}
+
+Los dos documentos auxiliares de esta branch que guiaban la PoC anterior son
+los siguientes. Uno es \path{LIBRUSTZCASH_AUDIT_FINDINGS.md}. El otro es
+\path{LIBRUSTZCASH_PCZT_AUDIT.md}.
+
+De ellos extraemos dos decisiones metodologicas. La primera es que la PoC debe
+vivir como \textbf{tests ejecutables} dentro del repo. La segunda es que el
+lugar correcto para empezar es \texttt{zcash\_client\_backend} y
+\texttt{zcash\_client\_memory}. Eso ya dio resultado, y desde ahi la misma
+familia de PoC relevantes pudo bajarse tambien a
+\texttt{zcash\_client\_sqlite} para confirmar que la corrupcion no era un
+artefacto del backend mock ni del store in-memory.
+
+\section{Hipotesis principal}
+
+La hipotesis de trabajo para la PoC compuesta es:
+
+\begin{quote}
+Un atacante con capacidad de introducir estado no plenamente validado o
+metadata mutable en un wallet local puede conseguir que el wallet almacene y
+reutilice una vista incorrecta del estado shielded, y que esa corrupcion se
+propague a historial, recipient intent, spendability local y recovery /
+rescan, con posibilidad adicional de DoS.
+\end{quote}
+
+\subsection{Capacidades del atacante}
+
+No hace falta que el atacante tenga \emph{todas} estas capacidades juntas.
+El documento agrupa varias rutas. Las capacidades relevantes son un servidor
+remoto malicioso o corrupto que alimenta compact blocks, input local de
+recovery o import que llama APIs wallet-side sobre transacciones no plenamente
+validadas, un coordinador o tooling step malicioso dentro de un flujo PCZT, o
+un momento de deep rewind o rescan sobre estado ya contaminado.
+
+\section{Mapa del ataque compuesto}
+
+\subsection{Vista de alto nivel}
+
+La cadena completa puede verse asi:
+
+\[
+\begin{array}{c}
+\texttt{admission}
+\rightarrow
+\texttt{persistence}
+\rightarrow
+\texttt{intent\ corruption}
+\\[0.3em]
+\rightarrow
+\texttt{spendability\ corruption}
+\rightarrow
+\texttt{reorg\ amplification}
+\rightarrow
+\texttt{panic/doS}
+\end{array}
+\]
+
+Cada fase puede ocurrir o no. No hace falta completar toda la cadena para
+tener impacto relevante, pero el peor caso local aparece cuando varias fases se
+encadenan.
+
+\section{Fase 1: admision de estado no validado}
+
+\subsection{Bug 1A: \texttt{decrypt\_and\_store\_transaction} no es un validador de consenso}
+
+\paragraph{Hallazgo confirmado.}
+\texttt{decrypt\_and\_store\_transaction} puede decriptar y persistir salidas
+wallet-relevant sin primero probar que la transaccion sea consenso-valida.
+
+\paragraph{Consecuencia.}
+Entra al wallet un estado que semantica y estructuralmente se trata como si ya
+hubiese pasado una frontera de validacion mas fuerte de la que realmente paso.
+
+\subsection{Bug 1B: compact scanning puede promover outputs sin validacion local completa}
+
+\paragraph{Hallazgo confirmado.}
+El path de compact scanning puede elevar outputs shielded a un estado local
+que parece wallet-owned o spendable-looking, sin verificacion local de proofs
+ni signatures.
+
+\paragraph{Consecuencia.}
+Esto no implica aceptacion de consenso, pero si implica que el wallet puede
+formar opiniones locales fuertes sobre ownership y spendability antes de una
+validacion completa.
+
+\subsection{Bug 1C: confusion de contexto ZIP-212}
+
+\paragraph{Hallazgo confirmado.}
+Si falta contexto de altura, \texttt{decrypt\_transaction} puede terminar
+aplicando el modo de enforcement pre-ZIP-212 (\texttt{Off}) a transacciones no
+minadas actuales.
+
+\paragraph{Consecuencia.}
+El wallet puede aceptar plaintext semantics pre-ZIP-212 en un contexto donde
+consenso actual no las aceptaria.
+
+\subsection{Por que esta fase es importante}
+
+La Fase 1 define la frontera de ingreso:
+
+\begin{quote}
+el wallet empieza a trabajar con datos shielded que son decryptable o
+parseable, pero todavia no estan suficientemente amarrados a la semantica de
+consenso que el resto del sistema informalmente asume.
+\end{quote}
+
+\section{Fase 2: persistencia sin rebinding suficiente}
+
+\subsection{Bug 2A: nota persistida sin recheck de commitment}
+
+\paragraph{Hallazgo confirmado.}
+Una vez que una \texttt{Received*Output} cruza a storage, los componentes de
+nota se persisten sin recomputar y comparar contra el \texttt{cmu}/\texttt{cmx}
+publicado.
+
+Esto rompe la idea deseable:
+
+\[
+\texttt{stored note state} \Longleftrightarrow \texttt{published commitment}
+\]
+
+porque la equivalencia deja de revalidarse en la frontera de persistencia.
+
+\subsection{Bug 2B: nullifier y tree position caller-supplied}
+
+\paragraph{Hallazgo confirmado.}
+Nullifier y commitment-tree-position pueden aceptarse y persistirse como
+metadata provista por el caller, en vez de rederivarse o cross-checkearse de
+forma canonica.
+
+\paragraph{Consecuencia.}
+El wallet puede construir una vision local de spentness o witness-availability
+basada en metadata no suficientemente reatada al note real.
+
+\subsection{Bug 2C: memo y output index no reatados al mismo output cifrado}
+
+\paragraph{Hallazgo confirmado.}
+Memo y output/action index pueden persistirse como piezas independientes sin
+reafirmar que siguen apuntando al mismo output ciphertext-bearing.
+
+\subsection{Bug 2D: upserts sticky}
+
+\paragraph{Hallazgo confirmado.}
+Ciertas asociaciones wallet-side en SQLite pueden quedar ``pegadas'' bajo
+semantica de upsert. En particular, la confirmacion reciente sobre
+\texttt{zcash\_client\_sqlite} mostro una causa concreta de divergencia:
+\texttt{sent\_notes} retenia \texttt{to\_address} y \texttt{to\_account\_id}
+previos aunque una actualizacion posterior reclasificara el output.
+
+Ese detalle importaba directamente para las PoC de reclasificacion falsa de
+output externo como \texttt{InternalAccount}, porque hacia que SQLite siguiera
+mostrando recipient externo en sent history y tx history incluso cuando el
+estado ya habia sido reescrito como wallet-interno. Corregido ese punto, las
+PoC relevantes de reclasificacion y reutilizacion de historial ya pasan sobre
+\texttt{zcash\_client\_sqlite}.
+
+\subsection{Por que esta fase es importante}
+
+La Fase 2 transforma un problema de admision transitoria en:
+
+\begin{quote}
+\textbf{corrupcion persistente de estado wallet}
+\end{quote}
+
+Una vez persistido el estado, el sistema puede reconstruir objetos
+internamente plausibles aunque el anchor final de verdad on-chain ya no sea el
+que manda.
+
+\section{Fase 3: corrupcion de intent en outputs enviados}
+
+\subsection{Bug 3A: PCZT output intent fields son wallet-bound}
+
+\paragraph{Hallazgo confirmado.}
+\texttt{user\_address} y la metadata propietaria de output no estan protegidos
+por consenso, sighash ni binding signatures.
+
+pero el wallet los sigue tratando como si fuesen verdad fuerte luego de
+extraer la transaccion.
+
+\subsection{Bug 3B: full UA mutable despues de elegir receiver concreto}
+
+\paragraph{Hallazgo confirmado.}
+Una vez que proposal/build eligio un receiver concreto de una UA, el resto de
+la UA ya no esta tx-bound; aun asi, la capa de extraction/storage puede
+guardar y mostrar la UA completa desde metadata mutable.
+
+\subsection{Bug 3C: sender recovery solo protege memo, no recipient/value/account}
+
+\paragraph{Hallazgo confirmado.}
+En ciertos paths de sent-output reconstruction desde PCZT, sender recovery se
+usa para memo, mientras recipient, value y account salen primero de metadata
+mutable.
+
+\subsection{Consecuencia global de la fase 3}
+
+Esta fase no cambia la tx on-chain, pero si cambia a quien cree el wallet que
+le pagaste, que full UA cree que se uso, que cuenta interna cree que estuvo
+involucrada y que valor cree que esta asociado a cierto output sent-history.
+
+\section{Fase 4: amplificacion en spendability local}
+
+\subsection{Como las fases anteriores contaminan gasto local}
+
+Si el wallet ya persistio note internals no revalidados, nullifier metadata
+caller-supplied, tree positions no rebindeadas y recipient o account semantics
+falsas, entonces las capas posteriores pueden reportar spendable balance
+equivocado, intentar generar witness sobre posiciones inconsistentes,
+considerar notas como spendables hasta que falle una verificacion tardia y
+generar propuestas o builds que solo fallan mas adelante.
+
+\subsection{Tipo de fallo esperado}
+
+No esperamos aqui un gasto on-chain valido con nullifier mal ligado. Lo que
+esperamos es \textbf{late failure}, \textbf{user-visible inconsistency} y
+\textbf{wallet-state corruption}.
+
+\section{Fase 5: amplificacion por reorg}
+
+\subsection{Bug 5A: deep rewind no limpia todo al target pedido}
+
+\paragraph{Hallazgo confirmado.}
+En deep rewind, el wallet puede preservar witness state, mined tx state y
+nullifier-derived spentness por encima del target solicitado, hasta el pruning
+floor.
+
+\subsection{Por que esto agrava la cadena}
+
+Si el estado ya venia contaminado por fases previas, el deep rewind puede
+hacer que esa contaminacion dure mas tiempo, mezclar estado ``viejo pero
+preservado'' con scan queue ``nueva pero aun no reparada'' y reforzar
+decisiones locales de spendability sobre una base criptografica inconsistente.
+
+\section{Fase 6: DoS como cierre de la cadena}
+
+\subsection{Bug 6A: valores fuera de rango paniquean}
+
+\paragraph{Hallazgo confirmado.}
+Ciertos note values out-of-range pueden paniquear al convertir a
+\texttt{Zatoshis}.
+
+\subsection{Bug 6B: compact metadata malformada paniquea scanning}
+
+\paragraph{Hallazgo confirmado.}
+Txid, nullifiers y otros campos compact protobuf malformados pueden disparar
+panic en scanning.
+
+\subsection{Valor ofensivo de esta fase}
+
+Si queremos una PoC fuerte de impacto local, el DoS es valioso porque puede
+cortar el flujo de autoreparacion por rescan, dejar la base o el estado
+intermedio en un punto donde el usuario solo ve que ``el wallet esta roto'' y
+convertir corrupcion semantica en problema operacional visible.
+
+\section{Ataques compuestos mas prometedores}
+
+\subsection{Cadena A: input no validado + persistencia + spendability}
+
+\begin{enumerate}[leftmargin=2em]
+    \item alimentar al wallet una tx decryptable pero no plenamente validada;
+    \item lograr que se persista;
+    \item observar que metadata de nota / nullifier / posicion no queda
+    suficientemente reatada;
+    \item intentar un path que use ese estado como spendable;
+    \item demostrar fallo tardio o inconsistencia local visible.
+\end{enumerate}
+
+\subsection{Cadena B: PCZT mutable + historial falso + persistencia}
+
+\begin{enumerate}[leftmargin=2em]
+    \item crear un PCZT valido;
+    \item mutar metadata output-side;
+    \item extraer y almacenar;
+    \item probar que el wallet guarda recipient/value/account/history distinto
+    del comprometido por la tx;
+    \item intentar que esa asociacion falsa sobreviva reprocesamiento local.
+\end{enumerate}
+
+\subsection{Cadena C: estado contaminado + deep rewind}
+
+\begin{enumerate}[leftmargin=2em]
+    \item introducir estado wallet-side inconsistente;
+    \item forzar deep rewind;
+    \item observar que parte del estado criptografico sobrevive arriba del
+    target;
+    \item probar que spendability o history siguen reflejando ese estado mixto.
+\end{enumerate}
+
+\section{Impacto compuesto final}
+
+La forma mas honesta de describir el impacto es:
+
+\begin{quote}
+No tenemos un exploit de theft on-chain. Tenemos una \textbf{cadena de
+integridad y disponibilidad de wallet local} que puede producir:
+\end{quote}
+
+historial falso, recipient intent falso, semantica de output errada, resumenes
+historicos de transaccion que heredan esa misma reclasificacion falsa,
+balances o spendability local equivocadas, fallos tardios al gastar y crash
+durante scanning, recovery o reprocesamiento.
+
+Por eso la severidad correcta del compuesto es:
+
+\textbf{High} para wallet local, \textbf{No Critical} y
+\textbf{No direct funds theft confirmed}.
+
+\section{Que partes queremos PoCear primero}
+
+\subsection{Estado actual del target SQLite}
+
+\texttt{zcash\_client\_sqlite} ya no esta bloqueado para las rutas principales
+que importan en esta historia. Hoy ya confirma:
+
+\begin{itemize}[leftmargin=2em]
+    \item sent history falso por metadata mutable de PCZT;
+    \item reclasificacion falsa de output externo como
+    \texttt{InternalAccount};
+    \item reutilizacion de esa reclasificacion en superficies de tx history;
+    \item y la ruta legacy-context $\rightarrow$ sent history visible.
+\end{itemize}
+
+\subsection{Targets obligatorios}
+
+Las PoC deben hacerse del mismo modo que la investigacion previa: como tests
+en backend (\texttt{zcash\_client\_backend}), como tests en memory
+(\texttt{zcash\_client\_memory}) y, cuando se trate de persistencia e
+historial wallet-side concreto, tambien sobre
+\texttt{zcash\_client\_sqlite}.
+
+\subsection{Razon de esos targets}
+
+\texttt{zcash\_client\_backend} nos deja demostrar el bug en la capa logica o
+API. \texttt{zcash\_client\_memory} nos deja demostrar persistencia y
+comportamiento wallet-side con iteracion rapida. Y
+\texttt{zcash\_client\_sqlite} ya nos deja confirmar que la misma corrupcion
+alcanza tambien al store relacional real y a sus superficies SQL de sent
+history / tx history.
+
+\section{Plan de PoC recomendado}
+
+\subsection{PoC 1: version ``minima fuerte''}
+
+\paragraph{Objetivo.}
+Demostrar que una tx o estado shielded no plenamente validado puede ser
+aceptado por APIs wallet-side bajo semantica de contexto equivocada y, desde
+ahi, servir como base para un flujo compuesto de corrupcion de estado.
+
+\paragraph{Forma.}
+Hoy esta implementada como test en \texttt{zcash\_client\_backend} y ya esta
+enganchada con una PoC wallet-visible en
+\texttt{zcash\_client\_memory}.
+
+\subsection{PoC 2: version ``PCZT + history corruption''}
+
+\paragraph{Objetivo.}
+Demostrar recipient, value, account e history corruption a partir de metadata
+mutable PCZT en un flujo local end-to-end.
+
+Esta PoC ya quedo implementada y validada en esta branch, y sigue siendo el
+lugar mas natural para profundizar. La infraestructura conceptual ya existe;
+backend y \texttt{zcash\_client\_memory} muestran la misma distincion entre
+recipient comprometido y recipient persistido; y el ataque compuesto puede
+apoyarse sobre esta misma base para sumar mas semantica errada, no solo
+recipient.
+
+\subsection{PoC 3: version ``reorg amplification''}
+
+\paragraph{Objetivo.}
+Demostrar que, una vez contaminado el estado local, un deep rewind no lo limpia
+totalmente y deja spendability o witness state en condicion inconsistente.
+
+\paragraph{Estado actual.}
+Esta linea esta documentada y confirmada por auditoria, pero
+\textbf{bloqueada en memory} por falta de implementacion de
+\texttt{rewind\_to\_chain\_state}. Por lo tanto debe tratarse como siguiente
+etapa compuesta, no como prerequisito inmediato.
+
+\subsection{PoC 4: version ``panic as amplifier''}
+
+\paragraph{Objetivo.}
+Cerrar la historia mostrando que ciertas entradas malformadas pueden evitar
+que el wallet se autorepare mediante rescan o recovery.
+
+\section{Que no debemos exagerar en la PoC}
+
+Para que la PoC sea solida, no conviene afirmar robo directo de fondos,
+bypass de consenso ni doble interpretacion on-chain de una misma tx.
+
+La PoC tiene que concentrarse en lo que si esta soportado por los hallazgos:
+corrupcion de estado wallet local, persistencia de metadata o note state mal
+reatada, spendability local equivocada, historial o intent falsos y DoS.
+
+\section{Resumen final}
+
+El viejo documento estaba bien para un solo bug PCZT. Ya no alcanza.
+
+La imagen tecnica correcta hoy es la siguiente. \texttt{librustzcash} tiene
+varios bugs wallet-side medianos o bajos, y varios de ellos comparten la misma
+debilidad: confiar demasiado en datos no plenamente validados o no
+cryptographically rebound. Al combinarlos, el impacto real sube. El mejor
+target de demostracion es un \textbf{wallet local}, y la forma correcta de
+PoCearlo en esta branch sigue siendo con tests en backend y memory, aceptando
+que la parte de reorg hoy no puede cerrarse en memory sin implementar primero
+soporte faltante del target.
+
+Ese es el ataque sobre el que conviene construir la siguiente tanda de PoC
+compuesta, arrancando por las rutas que ya estan demostradas y encadenandolas
+antes de intentar cubrir la parte de reorg.
+
+\end{document}

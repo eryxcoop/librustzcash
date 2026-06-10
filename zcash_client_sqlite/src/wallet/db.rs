@@ -1062,7 +1062,8 @@ sent_note_counts AS (
            ) AS memo_count
     FROM sent_notes
     LEFT JOIN v_received_outputs ro ON sent_notes.id = ro.sent_note_id
-    WHERE COALESCE(ro.is_change, 0) = 0
+    WHERE sent_notes.to_account_id IS NULL
+      AND COALESCE(ro.is_change, 0) = 0
     GROUP BY account_id, sent_notes.transaction_id
 ),
 blocks_max_height AS (
@@ -1212,6 +1213,7 @@ WITH unioned AS (
     LEFT JOIN v_received_outputs ro ON ro.sent_note_id = sent_notes.id
     -- join on the accounts table to obtain account UUIDs
     LEFT JOIN accounts from_account ON from_account.id = sent_notes.from_account_id
+    WHERE sent_notes.to_account_id IS NULL
 )
 -- merge duplicate rows while retaining maximum information
 SELECT

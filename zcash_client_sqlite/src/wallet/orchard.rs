@@ -683,6 +683,49 @@ pub(crate) mod tests {
         testing::pool::pczt_single_step::<OrchardPoolTester, SaplingPoolTester>()
     }
 
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn pczt_sent_history_can_be_misled_by_user_address() {
+        testing::pool::pczt_sent_history_can_be_misled_by_user_address::<OrchardPoolTester>()
+    }
+
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn pczt_sent_history_can_be_misled_by_user_address_and_output_metadata() {
+        testing::pool::pczt_sent_history_can_be_misled_by_user_address_and_output_metadata::<
+            OrchardPoolTester,
+        >()
+    }
+
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn pczt_sent_history_can_reclassify_external_output_as_internal_account() {
+        testing::pool::pczt_sent_history_can_reclassify_external_output_as_internal_account::<
+            OrchardPoolTester,
+        >()
+    }
+
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output() {
+        testing::pool::pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output::<
+            OrchardPoolTester,
+        >()
+    }
+
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification()
+     {
+        testing::pool::local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification::<OrchardPoolTester>()
+    }
+
+    #[cfg(feature = "pczt-tests")]
+    #[test]
+    fn local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan() {
+        testing::pool::local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan::<OrchardPoolTester>()
+    }
+
     #[cfg(feature = "transparent-inputs")]
     #[test]
     fn wallet_recovery_compute_fees() {
@@ -722,8 +765,9 @@ pub(crate) mod tests {
     #[cfg(all(feature = "pczt-tests", feature = "transparent-inputs"))]
     #[test]
     fn propose_shielding_coinbase_transparent_recipient_rejected() {
-        testing::pool::propose_shielding_coinbase_transparent_recipient_rejected::<OrchardPoolTester>(
-        );
+        testing::pool::propose_shielding_coinbase_transparent_recipient_rejected::<
+            OrchardPoolTester,
+        >();
     }
 
     #[cfg(all(feature = "pczt-tests", feature = "transparent-inputs"))]
@@ -735,8 +779,9 @@ pub(crate) mod tests {
     #[cfg(all(feature = "pczt-tests", feature = "transparent-inputs"))]
     #[test]
     fn propose_shielding_coinbase_with_limit_truncates_inputs() {
-        testing::pool::propose_shielding_coinbase_with_limit_truncates_inputs::<OrchardPoolTester>(
-        );
+        testing::pool::propose_shielding_coinbase_with_limit_truncates_inputs::<
+            OrchardPoolTester,
+        >();
     }
 
     #[cfg(all(feature = "pczt-tests", feature = "transparent-inputs"))]

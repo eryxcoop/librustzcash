@@ -1038,7 +1038,11 @@ impl<C: Borrow<rusqlite::Connection>, P: consensus::Parameters, CL, R> WalletTes
         use zcash_protocol::value::Zatoshis;
 
         let mut stmt_sent = self.conn.borrow().prepare(
-            "SELECT value, to_address,
+            "SELECT value,
+                    CASE
+                        WHEN sent_notes.to_account_id IS NULL THEN to_address
+                        ELSE NULL
+                    END AS to_address,
                     a.cached_transparent_receiver_address, a.transparent_child_index
              FROM sent_notes
              JOIN transactions t ON t.id_tx = sent_notes.transaction_id
@@ -2817,7 +2821,7 @@ mod tests {
         Account, AccountBirthday, AccountPurpose, AccountSource, WalletRead, WalletTest,
         WalletWrite,
         chain::ChainState,
-        testing::{TestBuilder, TestState},
+        testing::{DataStoreFactory, TestBuilder, TestState},
     };
     use zcash_keys::address::UnifiedAddress;
     use zcash_keys::keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey};
@@ -2863,6 +2867,183 @@ mod tests {
                 .validate_seed(account.id(), &SecretVec::new(vec![1u8; 32]))
                 .unwrap()
         });
+    }
+
+    #[cfg(all(
+        feature = "pczt-tests",
+        feature = "transparent-inputs",
+        feature = "orchard"
+    ))]
+    #[test]
+    fn decrypt_and_store_transaction_without_chain_context_can_surface_legacy_sapling_state_through_sent_history()
+     {
+        use ::orchard::Anchor as OrchardAnchor;
+        use ::sapling::Anchor as SaplingAnchor;
+        use rand_core::OsRng;
+        use transparent::builder::TransparentSigningSet;
+        use transparent::keys::IncomingViewingKey;
+        use zcash_client_backend::data_api::wallet::decrypt_and_store_transaction;
+        use zcash_keys::{address::Address, keys::UnifiedSpendingKey};
+        use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+        use zcash_protocol::{
+            consensus::{NetworkUpgrade, Parameters as _, ZIP212_GRACE_PERIOD},
+            memo::MemoBytes,
+            value::Zatoshis,
+        };
+        use zip32::Scope;
+
+        let network = LocalNetwork {
+            overwinter: Some(consensus::BlockHeight::from_u32(1)),
+            sapling: Some(consensus::BlockHeight::from_u32(1)),
+            blossom: Some(consensus::BlockHeight::from_u32(1)),
+            heartwood: Some(consensus::BlockHeight::from_u32(1)),
+            canopy: Some(consensus::BlockHeight::from_u32(1)),
+            nu5: Some(consensus::BlockHeight::from_u32(1)),
+            nu6: None,
+            nu6_1: None,
+            #[cfg(zcash_unstable = "nu7")]
+            nu7: None,
+            #[cfg(zcash_unstable = "zfuture")]
+            z_future: None,
+        };
+
+        let legacy_target_height = network
+            .activation_height(NetworkUpgrade::Sapling)
+            .expect("Sapling activation height is known on the local test network");
+        let current_semantics_height = network
+            .activation_height(NetworkUpgrade::Canopy)
+            .expect("Canopy activation height is known on the local test network")
+            + ZIP212_GRACE_PERIOD
+            + 10;
+
+        let seed = SecretVec::new(vec![0x11; 32]);
+        let birthday = AccountBirthday::from_parts(
+            ChainState::empty(legacy_target_height - 1, BlockHash([0; 32])),
+            None,
+        );
+
+        let mut wallet_without_context = TestDbFactory::default()
+            .new_data_store(network, None)
+            .unwrap();
+        let (_account_id, sender_usk) = wallet_without_context
+            .create_account("test account", &seed, &birthday, None)
+            .unwrap();
+        wallet_without_context
+            .update_chain_tip(current_semantics_height)
+            .unwrap();
+        let sender_dfvk = sender_usk.sapling().to_diversifiable_full_viewing_key();
+
+        let mut wallet_with_context = TestDbFactory::default()
+            .new_data_store(network, None)
+            .unwrap();
+        wallet_with_context
+            .create_account("test account", &seed, &birthday, None)
+            .unwrap();
+        wallet_with_context
+            .update_chain_tip(current_semantics_height)
+            .unwrap();
+
+        let transparent_account_sk = transparent::keys::AccountPrivKey::from_seed(
+            &network,
+            &[0x88; 32],
+            zip32::AccountId::ZERO,
+        )
+        .unwrap();
+        let (transparent_addr, address_index) = transparent_account_sk
+            .to_account_pubkey()
+            .derive_external_ivk()
+            .unwrap()
+            .default_address();
+        let transparent_sk = transparent_account_sk
+            .derive_external_secret_key(address_index)
+            .unwrap();
+        let secp = secp256k1::Secp256k1::signing_only();
+        let transparent_pubkey = transparent_sk.public_key(&secp);
+
+        let legacy_external_usk =
+            UnifiedSpendingKey::from_seed(&network, &[0x99; 32], zip32::AccountId::ZERO).unwrap();
+        let legacy_external_recipient = legacy_external_usk
+            .sapling()
+            .to_diversifiable_full_viewing_key()
+            .default_address()
+            .1;
+        let legacy_external_recipient_addr: Address = legacy_external_recipient.into();
+
+        let legacy_change_usk =
+            UnifiedSpendingKey::from_seed(&network, &[0xaa; 32], zip32::AccountId::ZERO).unwrap();
+        let legacy_change_recipient = legacy_change_usk
+            .sapling()
+            .to_diversifiable_full_viewing_key()
+            .default_address()
+            .1;
+
+        let utxo = transparent::bundle::OutPoint::fake();
+        let coin = transparent::bundle::TxOut::new(
+            Zatoshis::const_from_u64(1_000_000),
+            transparent_addr.script().into(),
+        );
+
+        let mut legacy_builder = Builder::new(
+            network,
+            legacy_target_height,
+            BuildConfig::Standard {
+                sapling_anchor: Some(SaplingAnchor::empty_tree()),
+                orchard_anchor: Some(OrchardAnchor::empty_tree()),
+            },
+        );
+        legacy_builder
+            .add_transparent_p2pkh_input(transparent_pubkey, utxo, coin)
+            .unwrap();
+        legacy_builder
+            .add_sapling_output::<core::convert::Infallible>(
+                Some(sender_dfvk.to_ovk(Scope::External)),
+                legacy_external_recipient,
+                Zatoshis::const_from_u64(100_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+        legacy_builder
+            .add_sapling_output::<core::convert::Infallible>(
+                Some(sender_dfvk.to_ovk(Scope::Internal)),
+                legacy_change_recipient,
+                Zatoshis::const_from_u64(885_000),
+                MemoBytes::empty(),
+            )
+            .unwrap();
+
+        let mut transparent_signing_set = TransparentSigningSet::new();
+        transparent_signing_set.add_key(transparent_sk);
+        let legacy_tx = legacy_builder
+            .mock_build(&transparent_signing_set, &[], &[], OsRng)
+            .unwrap()
+            .transaction()
+            .clone();
+        let legacy_txid = legacy_tx.txid();
+
+        decrypt_and_store_transaction(&network, &mut wallet_without_context, &legacy_tx, None)
+            .unwrap();
+
+        let initial_legacy_sent_outputs = wallet_without_context
+            .get_sent_outputs(&legacy_txid)
+            .unwrap();
+        let initial_legacy_displayed = initial_legacy_sent_outputs
+            .iter()
+            .find_map(|output| output.external_recipient().cloned())
+            .expect("missing chain context should surface the legacy external recipient");
+        assert_eq!(initial_legacy_displayed, legacy_external_recipient_addr);
+
+        decrypt_and_store_transaction(
+            &network,
+            &mut wallet_with_context,
+            &legacy_tx,
+            Some(current_semantics_height),
+        )
+        .unwrap();
+        let contextual_outputs = wallet_with_context.get_sent_outputs(&legacy_txid).unwrap();
+        assert!(
+            !contextual_outputs.is_empty(),
+            "the transaction remains visible to sent-history reconstruction even when reprocessed under current semantics in this sqlite path",
+        );
     }
 
     #[test]
