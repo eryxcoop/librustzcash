@@ -130,6 +130,26 @@ impl Default for TransparentSigningSet {
     }
 }
 
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl zeroize::Zeroize for TransparentSigningSet {
+    fn zeroize(&mut self) {
+        for (sk, _) in &mut self.keys {
+            sk.non_secure_erase();
+        }
+    }
+}
+
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl Drop for TransparentSigningSet {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.zeroize();
+    }
+}
+
+#[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
+impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
+
 impl TransparentSigningSet {
     /// Constructs an empty set of signing keys.
     pub fn new() -> Self {
