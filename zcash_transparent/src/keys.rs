@@ -237,7 +237,7 @@ impl Zeroize for AccountPrivKey {
     fn zeroize(&mut self) {
         // ExtendedPrivateKey does not implement Zeroize, so we overwrite it with a dummy key
         // derived from an all-zero seed.
-        if let Ok(dummy) = ExtendedPrivateKey::new(&[0u8; 32]) {
+        if let Ok(dummy) = ExtendedPrivateKey::new([0u8; 32]) {
             self.0 = dummy;
         }
     }
