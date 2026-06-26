@@ -18,6 +18,8 @@ use {
     zip32::AccountId,
 };
 
+#[cfg(feature = "zeroize")] use zeroize::{Zeroize, ZeroizeOnDrop};
+
 /// The scope of a transparent key.
 ///
 /// This type can represent [`zip32`] internal and external scopes, as well as custom scopes that
@@ -299,34 +301,40 @@ impl AccountPrivKey {
     /// [BIP 32](https://en.bitcoin.it/wiki/BIP_0032) ExtendedPrivateKey, excluding the
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Convert to `xprv` encoding.
-        let xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
-
-        // Now decode it and return the bytes we want.
-        bs58::decode(xprv_encoded)
-            .with_check(None)
-            .into_vec()
-            .expect("correct")
-            .split_off(Prefix::LENGTH)
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut decoded = bs58::decode(&xprv_encoded).with_check(None).into_vec().expect("correct");
+        let res = decoded[Prefix::LENGTH..].to_vec();
+        #[cfg(feature = "zeroize")] { xprv_encoded.zeroize(); decoded.zeroize(); }
+        res
     }
 
     /// Decodes the `AccountPrivKey` from the encoding specified for a
     /// [BIP 32](https://en.bitcoin.it/wiki/BIP_0032) ExtendedPrivateKey, excluding the
     /// 4 prefix bytes.
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
-        // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
-        let xprv_encoded = bs58::encode(bytes).with_check().into_string();
-
-        // Now we can parse it.
-        xprv_encoded
-            .parse::<ExtendedKey>()
-            .ok()
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
+        let res = xprv_encoded.parse::<ExtendedKey>().ok()
             .and_then(|k| ExtendedPrivateKey::try_from(k).ok())
-            .map(AccountPrivKey::from_extended_privkey)
+            .map(AccountPrivKey::from_extended_privkey);
+        #[cfg(feature = "zeroize")] { bytes.zeroize(); xprv_encoded.zeroize(); }
+        res
     }
 }
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Zeroize for AccountPrivKey {
+    fn zeroize(&mut self) { self.0 = ExtendedPrivateKey::new(&[0u8; 32]).expect("seed is valid"); }
+}
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for AccountPrivKey { fn drop(&mut self) { self.zeroize(); } }
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl ZeroizeOnDrop for AccountPrivKey {}
 
 /// A [BIP44] public key at the account path level `m/44'/<coin_type>'/<account>'`.
 ///
@@ -424,12 +432,12 @@ impl AccountPubKey {
     ///
     /// [transparent-ovk]: https://zips.z.cash/zip-0316#deriving-internal-keys
     pub fn ovks_for_shielding(&self) -> (InternalOvk, ExternalOvk) {
-        let i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
             .with(&self.0.attrs().chain_code, &self.0.public_key().serialize());
-        let ovk_external = ExternalOvk(i_ovk[..32].try_into().unwrap());
-        let ovk_internal = InternalOvk(i_ovk[32..].try_into().unwrap());
-
-        (ovk_internal, ovk_external)
+        let res = (InternalOvk(i_ovk[32..].try_into().unwrap()), ExternalOvk(i_ovk[..32].try_into().unwrap()));
+        #[cfg(feature = "zeroize")] i_ovk.zeroize();
+        res
     }
 
     /// Derives the internal ovk corresponding to this transparent fvk.
@@ -644,6 +652,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +669,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
@@ -808,6 +818,7 @@ mod tests {
             assert_eq!(tv.external_ovk, external.as_bytes());
         }
     }
+
 
     #[test]
     fn nonhardened_indexes_accepted() {
