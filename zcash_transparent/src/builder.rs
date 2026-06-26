@@ -126,10 +126,18 @@ pub struct TransparentSigningSet {
 
 #[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
 impl zeroize::Zeroize for TransparentSigningSet {
-    fn zeroize(&mut self) { for (sk, _) in self.keys.iter_mut() { sk.non_secure_erase(); } }
+    fn zeroize(&mut self) {
+        for (sk, _) in self.keys.iter_mut() {
+            sk.non_secure_erase();
+        }
+    }
 }
 #[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
-impl Drop for TransparentSigningSet { fn drop(&mut self) { zeroize::Zeroize::zeroize(self); } }
+impl Drop for TransparentSigningSet {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
 #[cfg(all(feature = "zeroize", feature = "transparent-inputs"))]
 impl zeroize::ZeroizeOnDrop for TransparentSigningSet {}
 
@@ -1179,7 +1187,6 @@ mod tests {
         let result = bundle.apply_signatures(calculate_sighash, &signing_set);
         assert!(result.is_ok(), "P2SH apply_signatures failed: {:?}", result);
     }
-
 
     #[test]
     fn apply_signatures_p2sh_missing_key() {

@@ -18,7 +18,8 @@ use {
     zip32::AccountId,
 };
 
-#[cfg(feature = "zeroize")] use zeroize::{Zeroize, ZeroizeOnDrop};
+#[cfg(feature = "zeroize")]
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// The scope of a transparent key.
 ///
@@ -304,9 +305,16 @@ impl AccountPrivKey {
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
-        let mut decoded = bs58::decode(&xprv_encoded).with_check(None).into_vec().expect("correct");
+        let mut decoded = bs58::decode(&xprv_encoded)
+            .with_check(None)
+            .into_vec()
+            .expect("correct");
         let res = decoded[Prefix::LENGTH..].to_vec();
-        #[cfg(feature = "zeroize")] { xprv_encoded.zeroize(); decoded.zeroize(); }
+        #[cfg(feature = "zeroize")]
+        {
+            xprv_encoded.zeroize();
+            decoded.zeroize();
+        }
         res
     }
 
@@ -319,20 +327,32 @@ impl AccountPrivKey {
         bytes.extend_from_slice(b);
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut xprv_encoded = bs58::encode(&bytes).with_check().into_string();
-        let res = xprv_encoded.parse::<ExtendedKey>().ok()
+        let res = xprv_encoded
+            .parse::<ExtendedKey>()
+            .ok()
             .and_then(|k| ExtendedPrivateKey::try_from(k).ok())
             .map(AccountPrivKey::from_extended_privkey);
-        #[cfg(feature = "zeroize")] { bytes.zeroize(); xprv_encoded.zeroize(); }
+        #[cfg(feature = "zeroize")]
+        {
+            bytes.zeroize();
+            xprv_encoded.zeroize();
+        }
         res
     }
 }
 
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 impl Zeroize for AccountPrivKey {
-    fn zeroize(&mut self) { self.0 = ExtendedPrivateKey::new(&[0u8; 32]).expect("seed is valid"); }
+    fn zeroize(&mut self) {
+        self.0 = ExtendedPrivateKey::new([0u8; 32]).expect("seed is valid");
+    }
 }
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
-impl Drop for AccountPrivKey { fn drop(&mut self) { self.zeroize(); } }
+impl Drop for AccountPrivKey {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
 #[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
 impl ZeroizeOnDrop for AccountPrivKey {}
 
@@ -435,8 +455,12 @@ impl AccountPubKey {
         #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut i_ovk = PrfExpand::TRANSPARENT_ZIP316_OVK
             .with(&self.0.attrs().chain_code, &self.0.public_key().serialize());
-        let res = (InternalOvk(i_ovk[32..].try_into().unwrap()), ExternalOvk(i_ovk[..32].try_into().unwrap()));
-        #[cfg(feature = "zeroize")] i_ovk.zeroize();
+        let res = (
+            InternalOvk(i_ovk[32..].try_into().unwrap()),
+            ExternalOvk(i_ovk[..32].try_into().unwrap()),
+        );
+        #[cfg(feature = "zeroize")]
+        i_ovk.zeroize();
         res
     }
 
@@ -818,7 +842,6 @@ mod tests {
             assert_eq!(tv.external_ovk, external.as_bytes());
         }
     }
-
 
     #[test]
     fn nonhardened_indexes_accepted() {
