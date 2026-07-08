@@ -230,6 +230,24 @@ impl IntoIterator for NonHardenedChildRange {
 #[cfg(feature = "transparent-inputs")]
 pub struct AccountPrivKey(ExtendedPrivateKey<secp256k1::SecretKey>);
 
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl zeroize::Zeroize for AccountPrivKey {
+    fn zeroize(&mut self) {
+        if let Ok(dummy) = ExtendedPrivateKey::new([0u8; 32]) { self.0 = dummy; }
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl Drop for AccountPrivKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(self);
+    }
+}
+
+#[cfg(all(feature = "transparent-inputs", feature = "zeroize"))]
+impl zeroize::ZeroizeOnDrop for AccountPrivKey {}
+
+
 #[cfg(feature = "transparent-inputs")]
 impl core::fmt::Debug for AccountPrivKey {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -299,32 +317,29 @@ impl AccountPrivKey {
     /// [BIP 32](https://en.bitcoin.it/wiki/BIP_0032) ExtendedPrivateKey, excluding the
     /// 4 prefix bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
-        // Convert to `xprv` encoding.
-        let xprv_encoded = self.0.to_extended_key(Prefix::XPRV).to_string();
-
-        // Now decode it and return the bytes we want.
-        bs58::decode(xprv_encoded)
-            .with_check(None)
-            .into_vec()
-            .expect("correct")
-            .split_off(Prefix::LENGTH)
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv = self.0.to_extended_key(Prefix::XPRV).to_string();
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut decoded = bs58::decode(&xprv).with_check(None).into_vec().expect("correct");
+        #[cfg(feature = "zeroize")] { zeroize::Zeroize::zeroize(&mut xprv); }
+        let result = decoded[Prefix::LENGTH..].to_vec();
+        #[cfg(feature = "zeroize")] { zeroize::Zeroize::zeroize(&mut decoded); }
+        result
     }
 
     /// Decodes the `AccountPrivKey` from the encoding specified for a
     /// [BIP 32](https://en.bitcoin.it/wiki/BIP_0032) ExtendedPrivateKey, excluding the
     /// 4 prefix bytes.
     pub fn from_bytes(b: &[u8]) -> Option<Self> {
-        // Convert to `xprv` encoding.
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
         let mut bytes = Prefix::XPRV.to_bytes().to_vec();
         bytes.extend_from_slice(b);
-        let xprv_encoded = bs58::encode(bytes).with_check().into_string();
-
-        // Now we can parse it.
-        xprv_encoded
-            .parse::<ExtendedKey>()
-            .ok()
-            .and_then(|k| ExtendedPrivateKey::try_from(k).ok())
-            .map(AccountPrivKey::from_extended_privkey)
+        #[cfg_attr(not(feature = "zeroize"), allow(unused_mut))]
+        let mut xprv = bs58::encode(&bytes).with_check().into_string();
+        #[cfg(feature = "zeroize")] { zeroize::Zeroize::zeroize(&mut bytes); }
+        let res = xprv.parse::<ExtendedKey>().ok().and_then(|k| ExtendedPrivateKey::try_from(k).ok()).map(Self::from_extended_privkey);
+        #[cfg(feature = "zeroize")] { zeroize::Zeroize::zeroize(&mut xprv); }
+        res
     }
 }
 
@@ -644,6 +659,7 @@ impl EphemeralIvk {
 }
 
 /// Internal outgoing viewing key used for autoshielding.
+#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct InternalOvk([u8; 32]);
 
 impl core::fmt::Debug for InternalOvk {
@@ -660,6 +676,7 @@ impl InternalOvk {
 
 /// External outgoing viewing key used by `zcashd` for transparent-to-shielded spends to
 /// external receivers.
+#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct ExternalOvk([u8; 32]);
 
 impl core::fmt::Debug for ExternalOvk {
