@@ -632,22 +632,36 @@ where
     DbT: WalletWrite,
     <DbT as WalletRead>::AccountId: ConditionallySelectable + Default + Send + Sync + 'static,
 {
+    // The chain state must describe the block immediately preceding the first block to scan, so
+    // that the note commitment tree frontiers line up with the blocks we are about to process.
+    // Sensitive: no (public chain data).
     assert_eq!(from_height, from_state.block_height + 1);
 
     // Fetch the UnifiedFullViewingKeys we are tracking
+    // Sensitive: YES (viewing keys reveal the wallet's full incoming/outgoing history; never log).
     let account_ufvks = data_db
         .get_unified_full_viewing_keys()
         .map_err(Error::Wallet)?;
     let scanning_keys = ScanningKeys::from_account_ufvks(account_ufvks);
     let mut runners = BatchRunners::<_, (), (), ()>::for_keys(100, &scanning_keys);
 
+    // First pass over the block source: feed every block into the batch runners so that trial
+    // decryption of the shielded outputs can be done in batches ahead of the sequential scan.
+    // Sensitive: YES (decrypts outputs with the viewing keys; plaintext notes held in memory).
     block_source.with_blocks::<_, <DbT as WalletRead>::Error>(
         Some(from_height),
         Some(limit),
         |block| runners.add_block(params, block).map_err(|e| e.into()),
     )?;
+    // Force decryption of any outputs still queued, so that all results are available to the
+    // second pass.
+    // Sensitive: YES (completes the decryption above).
     runners.flush();
 
+    // Load the metadata of the block preceding the scan range (if we have it), used to check
+    // chain continuity and to derive the note commitment tree sizes for the first scanned block.
+    // There is no such block when scanning from the genesis block.
+    // Sensitive: no (public chain data).
     let mut prior_block_metadata = if from_height > BlockHeight::from(0) {
         data_db
             .block_metadata(from_height - 1)
@@ -657,16 +671,22 @@ where
     };
 
     // Get the spend identifiers for the unspent outputs we are tracking.
+    // Sensitive: yes, privacy only (nullifiers/outpoints of the wallet's unspent notes link it to
+    // on-chain spends).
     let mut spend_ids = SpendIdentifiers::unspent(data_db).map_err(Error::Wallet)?;
 
     // Nothing writes to the wallet until the whole batch has been scanned, so the wallet's set
     // of transparent receivers is fixed for the duration of the scan and is resolved against a
     // single snapshot rather than by a query per transparent output.
+    // Sensitive: yes, privacy only (the wallet's own transparent addresses).
     #[cfg(feature = "transparent-inputs")]
     let transparent_receivers = data_db
         .get_transparent_receiver_accounts()
         .map_err(Error::Wallet)?;
 
+    // Second pass over the block source: scan each block sequentially, in height order, collecting
+    // the results in memory. The summary range starts empty and grows as blocks are scanned.
+    // Sensitive: no on its own; `scanned_blocks` will hold decrypted wallet data (see below).
     let mut scanned_blocks = vec![];
     let mut scan_summary = ScanSummary::for_range(from_height..from_height);
     block_source.with_blocks::<_, <DbT as WalletRead>::Error>(
@@ -674,6 +694,13 @@ where
         Some(limit),
         |block: CompactBlock| {
             scan_summary.scanned_range.end = block.height() + 1;
+
+            // Scan the block, using the decryption results precomputed by the batch runners. This
+            // checks continuity against the prior block, detects notes sent to us and spends of
+            // notes we already know about, and (with `transparent-inputs`) resolves transparent
+            // outputs against the wallet's receivers.
+            // Sensitive: YES (uses the viewing keys; result holds decrypted note values, memos and
+            // wallet addresses). Errors here must not leak that data.
             let scanned_block = scan_block_with_runners::<_, _, _, (), (), (), _>(
                 params,
                 block,
@@ -691,6 +718,8 @@ where
                 ScanBlockError::AddressLookup(e) => Error::Wallet(e),
             })?;
 
+            // Accumulate the per-pool counts of spent and received notes into the summary.
+            // Sensitive: low (counts only, but they reveal wallet activity).
             for wtx in &scanned_block.transactions {
                 scan_summary.spent_sapling_note_count += wtx.sapling_spends().len();
                 scan_summary.received_sapling_note_count += wtx.sapling_outputs().len();
@@ -701,6 +730,10 @@ where
                 }
             }
 
+            // Make the notes found in this block spendable-detectable within later blocks of the
+            // same batch, and chain this block's metadata into the scan of the next one.
+            // Sensitive: yes for `spend_ids` and `scanned_blocks` (wallet-derived); the block
+            // metadata is public.
             spend_ids.update_with(&scanned_block);
             prior_block_metadata = Some(scanned_block.to_block_metadata());
             scanned_blocks.push(scanned_block);
@@ -709,6 +742,9 @@ where
         },
     )?;
 
+    // Persist all scanned blocks in a single call, updating the note commitment trees starting
+    // from the provided chain state, and report what the scan found.
+    // Sensitive: YES (persists decrypted notes, memos and wallet addresses to the database).
     data_db
         .put_blocks(from_state, scanned_blocks)
         .map_err(Error::Wallet)?;
